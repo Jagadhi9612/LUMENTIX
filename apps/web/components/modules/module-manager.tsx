@@ -102,7 +102,7 @@ export function ModuleManager<T extends BaseRecord>({
   searchKeys,
   actions = [],
   uploadPath,
-  layout = "split",
+  layout = "wide",
   detailPath
 }: ModuleManagerProps<T>) {
   const { data, loading, error } = useRealtimeCollection<T>(collectionName);
@@ -347,12 +347,12 @@ export function ModuleManager<T extends BaseRecord>({
           </div>
         </header>
 
-        <div className={cn("grid gap-6 p-4 md:p-7", layout === "wide" ? "grid-cols-1" : "xl:grid-cols-[0.82fr_1.18fr]")}>
+        <div className={cn("grid gap-7 p-4 md:p-7", layout === "wide" ? "grid-cols-1" : "xl:grid-cols-[minmax(24rem,0.9fr)_minmax(0,1.1fr)]")}>
           <Card>
-            <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="mb-6 flex flex-col gap-3 border-b border-white/8 pb-5 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0 break-words">
                 <h2 className="text-xl font-black">{editing ? "Edit Record" : "Create Record"}</h2>
-                <p className="text-sm text-white/50">Validated Firestore form</p>
+                <p className="mt-1 text-sm text-white/50">Enter the important details with enough space to review before saving.</p>
               </div>
               <Button
                 variant="secondary"
@@ -365,17 +365,17 @@ export function ModuleManager<T extends BaseRecord>({
                 <Plus size={18} /> New
               </Button>
             </div>
-            <form className={cn("grid gap-4 md:grid-cols-2", layout === "wide" && "xl:grid-cols-4")} onSubmit={form.handleSubmit(submit)}>
+            <form className={cn("grid gap-x-6 gap-y-5 md:grid-cols-2", layout === "wide" && "xl:grid-cols-3")} onSubmit={form.handleSubmit(submit)}>
               {visibleFields.map((field) => (
-                <label key={field.name} className={cn(field.type === "textarea" && "md:col-span-2", layout === "wide" && field.type === "textarea" && "xl:col-span-4")}>
+                <label key={field.name} className={cn("min-w-0", field.type === "textarea" && "md:col-span-2", layout === "wide" && field.type === "textarea" && "xl:col-span-3")}>
                   <span className="mb-2 block text-sm font-semibold text-white/68">
                     {field.label}
                     {field.required && <span className="ml-1 text-[#E10600]">*</span>}
                   </span>
                   {field.type === "textarea" ? (
-                    <textarea className="min-h-24 w-full rounded-lg border border-white/10 bg-black/35 px-3 py-3 outline-none focus:border-[#E10600]" {...form.register(field.name)} />
+                    <textarea className="min-h-32 w-full rounded-lg border border-white/10 bg-black/35 px-4 py-3 leading-6 outline-none focus:border-[#E10600]" {...form.register(field.name)} />
                   ) : field.type === "select" ? (
-                    <select className="h-11 w-full rounded-lg border border-white/10 bg-[#111111] px-3 outline-none focus:border-[#E10600]" {...form.register(field.name)}>
+                    <select className="h-12 w-full rounded-lg border border-white/10 bg-[#111111] px-4 outline-none focus:border-[#E10600]" {...form.register(field.name)}>
                       {field.options?.map((option) => (
                         <option key={option} value={option}>
                           {option || "Select package"}
@@ -383,14 +383,16 @@ export function ModuleManager<T extends BaseRecord>({
                       ))}
                     </select>
                   ) : field.type === "checkbox" ? (
-                    <input type="checkbox" className="size-5 accent-[#E10600]" {...form.register(field.name)} />
+                    <div className="flex h-12 items-center rounded-lg border border-white/10 bg-black/25 px-4">
+                      <input type="checkbox" className="size-5 accent-[#E10600]" {...form.register(field.name)} />
+                    </div>
                   ) : (
-                    <input type={field.type ?? "text"} className="h-11 w-full rounded-lg border border-white/10 bg-black/35 px-3 outline-none focus:border-[#E10600]" {...form.register(field.name, { valueAsNumber: field.type === "number" })} />
+                    <input type={field.type ?? "text"} className="h-12 w-full rounded-lg border border-white/10 bg-black/35 px-4 outline-none focus:border-[#E10600]" {...form.register(field.name, { valueAsNumber: field.type === "number" })} />
                   )}
                   {form.formState.errors[field.name] && <span className="mt-1 block text-xs text-[#DC2626]">This field needs a valid value.</span>}
                 </label>
               ))}
-              <div className={cn("grid gap-2 sm:flex sm:flex-wrap md:col-span-2", layout === "wide" && "xl:col-span-4")}>
+              <div className={cn("mt-2 grid gap-3 border-t border-white/8 pt-5 sm:flex sm:flex-wrap md:col-span-2", layout === "wide" && "xl:col-span-3")}>
                 <Button type="submit" className="w-full sm:w-auto">{editing ? "Update" : "Save"}</Button>
                 <Button type="button" variant="secondary" className="w-full sm:w-auto" onClick={() => form.reset(defaultValues)}>
                   Cancel
