@@ -1,0 +1,35 @@
+{
+  "name": "elite-fitness",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ELITE FITNESS - premium gym management SaaS platform.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @elite/web",
+    "dev:web": "npm run dev --workspace @elite/web",
+    "dev:api": "npm run dev --workspace @elite/api",
+    "build": "npm run build --workspace @elite/web && npm run build --workspace @elite/api",
+    "lint": "npm run lint --workspace @elite/web && npm run lint --workspace @elite/api",
+    "typecheck": "npm run typecheck --workspace @elite/web && npm run typecheck --workspace @elite/api",
+    "check:web": "npm run build --workspace @elite/web && npm run lint --workspace @elite/web",
+    "check:functions": "npm run build --workspace @elite/api && npm run lint --workspace @elite/api",
+    "check:production": "npm run check:web && npm run check:functions && npm audit --omit=dev --audit-level=high",
+    "deploy:hosting": "firebase deploy --only hosting --project elite-fitness-2026",
+    "deploy:rules": "firebase deploy --only firestore:rules,firestore:indexes,storage --project elite-fitness-2026",
+    "deploy:functions": "firebase deploy --only functions --project elite-fitness-2026",
+    "db:generate": "npm run db:generate --workspace @elite/db",
+    "db:seed": "npm run db:seed --workspace @elite/db"
+  },
+  "overrides": {
+    "postcss": "^8.5.10",
+    "next": {
+      "postcss": "^8.5.10"
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

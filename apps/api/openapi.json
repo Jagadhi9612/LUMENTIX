@@ -1,0 +1,287 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Elite Fitness API",
+    "description": "Premium gym management SaaS platform API",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Elite Fitness Support",
+      "email": "support@eliteifitness.com"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:4000/api/v1",
+      "description": "Development server"
+    },
+    {
+      "url": "https://api.eliteifitness.com/api/v1",
+      "description": "Production server"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "Member": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fullName": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "memberCode": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["ACTIVE", "INACTIVE", "SUSPENDED"]
+          },
+          "membershipStart": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "membershipEnd": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Payment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "memberId": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "number"
+          },
+          "method": {
+            "type": "string",
+            "enum": ["CARD", "CASH", "CHECK", "UPI", "NET_BANKING"]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["PENDING", "COMPLETED", "FAILED", "REFUNDED"]
+          },
+          "transactionId": {
+            "type": "string"
+          }
+        }
+      },
+      "Trainer": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fullName": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "specialization": {
+            "type": "string"
+          },
+          "experience": {
+            "type": "integer"
+          },
+          "shift": {
+            "type": "string",
+            "enum": ["MORNING", "AFTERNOON", "EVENING", "FLEXIBLE"]
+          }
+        }
+      },
+      "Expense": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "category": {
+            "type": "string",
+            "enum": ["EQUIPMENT", "UTILITIES", "STAFF", "MAINTENANCE", "SUPPLIES", "OTHER"]
+          },
+          "amount": {
+            "type": "number"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["PENDING", "APPROVED", "REJECTED"]
+          },
+          "date": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health check",
+        "tags": ["System"],
+        "responses": {
+          "200": {
+            "description": "Service is healthy"
+          }
+        }
+      }
+    },
+    "/members": {
+      "get": {
+        "summary": "List all members",
+        "tags": ["Members"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"name": "page", "in": "query", "schema": {"type": "integer"}},
+          {"name": "limit", "in": "query", "schema": {"type": "integer"}},
+          {"name": "search", "in": "query", "schema": {"type": "string"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "List of members"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a new member",
+        "tags": ["Members"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/Member"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Member created"
+          },
+          "422": {
+            "description": "Validation error"
+          }
+        }
+      }
+    },
+    "/payments": {
+      "get": {
+        "summary": "List all payments",
+        "tags": ["Payments"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {
+            "description": "List of payments"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a new payment",
+        "tags": ["Payments"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/Payment"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Payment created"
+          }
+        }
+      }
+    },
+    "/trainers": {
+      "get": {
+        "summary": "List all trainers",
+        "tags": ["Trainers"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {
+            "description": "List of trainers"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a new trainer",
+        "tags": ["Trainers"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/Trainer"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Trainer created"
+          }
+        }
+      }
+    },
+    "/expenses": {
+      "get": {
+        "summary": "List all expenses",
+        "tags": ["Expenses"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {
+            "description": "List of expenses"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a new expense",
+        "tags": ["Expenses"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/Expense"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Expense created"
+          }
+        }
+      }
+    }
+  }
+}
