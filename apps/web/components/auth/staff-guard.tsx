@@ -7,7 +7,8 @@ import { useEffect, useState } from "react";
 import { useApp } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { db, isFirebaseConfigured } from "@/lib/firebase";
+import { isFirebaseConfigured } from "@/lib/firebase";
+import { db } from "@/lib/firebase-firestore";
 
 const STAFF_ROLES = ["SUPER_ADMIN", "GYM_MANAGER", "RECEPTIONIST", "TRAINER", "ACCOUNTANT"];
 

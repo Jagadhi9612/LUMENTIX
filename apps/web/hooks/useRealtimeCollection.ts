@@ -6,13 +6,25 @@ import { listenCollection, type CollectionName } from "@/lib/firestore-service";
 import { isFirebaseConfigured } from "@/lib/firebase";
 import type { BaseRecord } from "@/lib/firebase-types";
 
-export function useRealtimeCollection<T extends BaseRecord>(name: CollectionName, constraints?: QueryConstraint[]) {
+type RealtimeCollectionOptions = {
+  enabled?: boolean;
+};
+
+export function useRealtimeCollection<T extends BaseRecord>(name: CollectionName, constraints?: QueryConstraint[], options: RealtimeCollectionOptions = {}) {
+  const enabled = options.enabled ?? true;
   const [data, setData] = useState<T[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<string | null>(null);
   const stableConstraints = useMemo(() => constraints, [constraints]);
 
   useEffect(() => {
+    if (!enabled) {
+      setData([]);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+
     if (!isFirebaseConfigured()) {
       setData([]);
       setError("Firebase is not configured. Add NEXT_PUBLIC_FIREBASE_* values to .env.local to load live records.");
@@ -36,7 +48,7 @@ export function useRealtimeCollection<T extends BaseRecord>(name: CollectionName
     );
 
     return unsubscribe;
-  }, [name, stableConstraints]);
+  }, [enabled, name, stableConstraints]);
 
   return { data, loading, error };
 }

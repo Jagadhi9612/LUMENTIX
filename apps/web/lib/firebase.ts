@@ -1,9 +1,4 @@
 import { initializeApp, getApps } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFunctions } from "firebase/functions";
-import { getFirestore } from "firebase/firestore";
-import { getMessaging, isSupported } from "firebase/messaging";
-import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "build-safe-api-key",
@@ -15,13 +10,11 @@ const firebaseConfig = {
 };
 
 export const firebaseApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
-export const auth = getAuth(firebaseApp);
-export const db = getFirestore(firebaseApp);
-export const storage = getStorage(firebaseApp);
-export const functions = getFunctions(firebaseApp);
 export const firebasePublicConfig = firebaseConfig;
 
 export async function getClientMessaging() {
+  const { getMessaging, isSupported } = await import("firebase/messaging");
+
   if (typeof window === "undefined" || !(await isSupported())) {
     return null;
   }

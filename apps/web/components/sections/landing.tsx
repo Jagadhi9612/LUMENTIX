@@ -7,6 +7,7 @@ import { BrandLogo } from "@/components/brand-logo";
 import { packages } from "@/lib/data";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
+import { LazyVideo } from "../ui/lazy-video";
 
 const reveal = {
   hidden: { opacity: 0, y: 24 },
@@ -37,7 +38,7 @@ export function Landing() {
   return (
     <main className="min-h-screen overflow-hidden bg-[#050505] text-white">
       <section className="relative min-h-[96vh] px-4 py-5 sm:px-5">
-        <video className="absolute inset-0 h-full w-full object-cover" src="/videos/gym-hero.mp4" autoPlay muted loop playsInline preload="metadata" />
+        <LazyVideo className="absolute inset-0 h-full w-full object-cover" src="/videos/gym-hero.mp4" eager autoPlay muted loop playsInline />
         <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(5,5,5,0.94),rgba(5,5,5,0.58),rgba(5,5,5,0.86))]" />
 
         <nav className="relative z-10 mx-auto flex max-w-7xl items-center justify-between gap-3">
@@ -134,7 +135,7 @@ export function Landing() {
               transition={{ duration: 0.55, delay: index * 0.12 }}
               className="overflow-hidden rounded-lg border border-white/10 bg-[#111111]"
             >
-              <video className="aspect-video w-full object-cover" src={item.video} autoPlay muted loop playsInline preload="metadata" />
+              <LazyVideo className="aspect-video w-full object-cover" src={item.video} autoPlay muted loop playsInline />
               <div className="p-5">
                 <h3 className="text-2xl font-black">{item.title}</h3>
                 <p className="mt-2 text-sm leading-6 text-white/62">{item.copy}</p>

@@ -106,7 +106,7 @@ export function ModuleManager<T extends BaseRecord>({
   detailPath
 }: ModuleManagerProps<T>) {
   const { data, loading, error } = useRealtimeCollection<T>(collectionName);
-  const packages = useRealtimeCollection<GymPackage>("packages");
+  const packages = useRealtimeCollection<GymPackage>("packages", undefined, { enabled: collectionName === "members" });
   const { toast } = useApp();
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");

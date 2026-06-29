@@ -2,7 +2,9 @@
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signOut, type User } from "firebase/auth";
-import { auth, isFirebaseConfigured } from "@/lib/firebase";
+import { usePathname } from "next/navigation";
+import { isFirebaseConfigured } from "@/lib/firebase";
+import { auth } from "@/lib/firebase-auth";
 
 type Toast = { id: string; title: string; tone: "success" | "error" | "info" };
 
@@ -18,11 +20,20 @@ type AppContextValue = {
 const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   useEffect(() => {
+    const needsAuth = pathname === "/login" || pathname.startsWith("/staff") || pathname.startsWith("/members") || pathname.startsWith("/payments") || pathname.startsWith("/reports") || pathname.startsWith("/attendance") || pathname.startsWith("/packages") || pathname.startsWith("/trainers") || pathname.startsWith("/expenses") || pathname.startsWith("/notifications") || pathname.startsWith("/settings");
+
+    if (!needsAuth) {
+      setUser(null);
+      setAuthLoading(false);
+      return;
+    }
+
     if (!isFirebaseConfigured()) {
       setAuthLoading(false);
       return;
@@ -32,7 +43,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       setUser(currentUser);
       setAuthLoading(false);
     });
-  }, []);
+  }, [pathname]);
 
   const value = useMemo<AppContextValue>(
     () => ({

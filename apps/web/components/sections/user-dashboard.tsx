@@ -8,7 +8,8 @@ import { useEffect, useMemo, useState } from "react";
 import { BrandLogo } from "@/components/brand-logo";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { functions, getClientMessaging, getFirebaseVapidKey } from "@/lib/firebase";
+import { getClientMessaging, getFirebaseVapidKey } from "@/lib/firebase";
+import { functions } from "@/lib/firebase-functions";
 import { cn } from "@/lib/utils";
 
 type Goal = "Fat Loss" | "Muscle Gain" | "Fitness" | "Strength";

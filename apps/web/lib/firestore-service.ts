@@ -15,7 +15,9 @@ import {
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
-import { db, functions, storage } from "./firebase";
+import { functions } from "./firebase-functions";
+import { db } from "./firebase-firestore";
+import { storage } from "./firebase-storage";
 import type { BaseRecord } from "./firebase-types";
 
 export type CollectionName =
