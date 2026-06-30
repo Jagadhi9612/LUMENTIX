@@ -1,0 +1,119 @@
+name: Firebase CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - "intern/**"
+  pull_request:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  NODE_VERSION: "22"
+
+jobs:
+  verify:
+    name: Verify web, functions, and audit gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check web
+        run: npm run check:web
+
+      - name: Check functions
+        run: npm run check:functions
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  hosting-preview:
+    name: Firebase Hosting preview
+    runs-on: ubuntu-latest
+    needs: verify
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web
+        run: npm run build --workspace @elite/web
+        env:
+          NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ secrets.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
+          NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ secrets.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET }}
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+          NEXT_PUBLIC_FIREBASE_APP_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_APP_ID }}
+          NEXT_PUBLIC_FIREBASE_VAPID_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_VAPID_KEY }}
+
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_ELITE_FITNESS_2026 }}
+          projectId: elite-fitness-2026
+          channelId: pr-${{ github.event.pull_request.number }}
+
+  deploy-hosting:
+    name: Deploy production Hosting
+    runs-on: ubuntu-latest
+    needs: verify
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web
+        run: npm run build --workspace @elite/web
+        env:
+          NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ secrets.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
+          NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ secrets.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET }}
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+          NEXT_PUBLIC_FIREBASE_APP_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_APP_ID }}
+          NEXT_PUBLIC_FIREBASE_VAPID_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_VAPID_KEY }}
+
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_ELITE_FITNESS_2026 }}
+          projectId: elite-fitness-2026
+          channelId: live
