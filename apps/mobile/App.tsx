@@ -1,43 +1,43 @@
-import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
-import { useStepCounter } from './src/hooks/useStepCounter';
+import React, { useState } from 'react';
+import { View, TouchableOpacity, Text, StyleSheet } from 'react-native';
+import AITrainerScreen from './src/screens/AITrainerScreen';
+import HistoryScreen from './src/screens/HistoryScreen';
 
 export default function App() {
-  const { steps, isAvailable } = useStepCounter();
+  const [activeTab, setActiveTab] = useState<'trainer' | 'history'>('trainer');
 
-   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Elite Fitness</Text>
-      <Text style={styles.label}>
-        Step Counter: {isAvailable ? 'Available' : 'Not Available'}
-      </Text>
-      <Text style={styles.steps}>Steps: {steps}</Text>
-      <StatusBar style="auto" />
+  return (
+    <View style={{ flex: 1, backgroundColor: '#000' }}>
+      {/* Tab Navigation */}
+      <View style={styles.tabBar}>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'trainer' && styles.tabActive]}
+          onPress={() => setActiveTab('trainer')}
+        >
+          <Text style={[styles.tabText, activeTab === 'trainer' && styles.tabTextActive]}>
+            🤖 AI Trainer
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'history' && styles.tabActive]}
+          onPress={() => setActiveTab('history')}
+        >
+          <Text style={[styles.tabText, activeTab === 'history' && styles.tabTextActive]}>
+            📊 History
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Screen Content */}
+      {activeTab === 'trainer' ? <AITrainerScreen /> : <HistoryScreen />}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#000',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#FFD700',
-    marginBottom: 20,
-  },
-  label: {
-    fontSize: 16,
-    color: '#fff',
-    marginBottom: 10,
-  },
-  steps: {
-    fontSize: 48,
-    fontWeight: 'bold',
-    color: '#FFD700',
-  },
+  tabBar: { flexDirection: 'row', backgroundColor: '#111', paddingTop: 50, paddingBottom: 10 },
+  tab: { flex: 1, alignItems: 'center', padding: 10 },
+  tabActive: { borderBottomWidth: 2, borderBottomColor: '#FFD700' },
+  tabText: { color: '#888', fontSize: 14 },
+  tabTextActive: { color: '#FFD700', fontWeight: 'bold' },
 });

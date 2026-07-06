@@ -31,5 +31,10 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "expo": "~57.0.1",
+    "react": "19.2.3",
+    "react-native": "0.86.0"
   }
 }
