@@ -1,0 +1,1775 @@
+diff --git a/apps/api/src/index.ts b/apps/api/src/index.ts
+index 993cc42..c3d363d 100644
+--- a/apps/api/src/index.ts
++++ b/apps/api/src/index.ts
+@@ -5,9 +5,13 @@ import { getMessaging } from "firebase-admin/messaging";
+ import { onDocumentWritten } from "firebase-functions/v2/firestore";
+ import { HttpsError, onCall, onRequest } from "firebase-functions/v2/https";
+ import { onSchedule } from "firebase-functions/v2/scheduler";
++import { defineSecret } from "firebase-functions/params";
+ import { logger } from "firebase-functions";
+ import { z } from "zod";
+-import { createHash } from "node:crypto";
++import { createHash, createHmac } from "node:crypto";
++
++const razorpayKeyId = defineSecret("RAZORPAY_KEY_ID");
++const razorpayKeySecret = defineSecret("RAZORPAY_KEY_SECRET");
+ 
+ initializeApp();
+ 
+@@ -15,6 +19,30 @@ const db = getFirestore();
+ 
+ const STAFF_ROLES = ["SUPER_ADMIN", "GYM_MANAGER", "RECEPTIONIST", "TRAINER", "ACCOUNTANT"] as const;
+ const SYSTEM_ROLES = ["SUPER_ADMIN", "GYM_MANAGER"] as const;
++const MEMBER_ROLE = "MEMBER" as const;
++
++const linkMemberAccountSchema = z.object({
++  memberId: z.string().trim().min(2).max(80),
++  phone: z.string().trim().min(6).max(24)
++});
++
++const createMarketplaceOrderSchema = z.object({
++  orderId: z.string().trim().min(1)
++});
++
++const verifyMarketplacePaymentSchema = z.object({
++  orderId: z.string().trim().min(1),
++  razorpay_order_id: z.string().trim().min(1),
++  razorpay_payment_id: z.string().trim().min(1),
++  razorpay_signature: z.string().trim().min(1)
++});
++
++const createBookingSchema = z.object({
++  trainerId: z.string().trim().min(1),
++  date: z.string().trim().min(8).max(10),
++  startTime: z.string().trim().min(3).max(8),
++  endTime: z.string().trim().min(3).max(8)
++});
+ 
+ const auditSchema = z.object({
+   action: z.string().trim().min(2).max(80),
+@@ -384,6 +412,230 @@ export const registerMemberDevice = onCall({ cors: true, invoker: "public" }, as
+   };
+ });
+ 
++/**
++ * Links a freshly-created Firebase Auth account (email/password, created
++ * client-side) to an existing `members` record, granting the MEMBER custom
++ * claim so Firestore rules and <MemberGuard> recognize them as a member.
++ * Verification is a memberId + phone match, same approach already used by
++ * registerMemberDevice above — no new verification channel introduced.
++ */
++export const linkMemberAccount = onCall({ cors: true }, async (request) => {
++  const auth = requireAuth(request);
++  const payload = linkMemberAccountSchema.parse(request.data);
++
++  const snapshot = await db.collection("members").where("memberId", "==", payload.memberId).limit(1).get();
++  if (snapshot.empty) {
++    throw new HttpsError("not-found", "No member found for this member ID.");
++  }
++
++  const memberDoc = snapshot.docs[0];
++  const member = memberDoc.data();
++  if (!phoneMatches(payload.phone, member.phone) && !phoneMatches(payload.phone, member.whatsapp)) {
++    throw new HttpsError("permission-denied", "Member ID and phone number do not match.");
++  }
++
++  await getAuth().setCustomUserClaims(auth.uid, { role: MEMBER_ROLE, memberId: payload.memberId });
++
++  await db.collection("users").doc(auth.uid).set(
++    {
++      email: typeof auth.token.email === "string" ? auth.token.email : "",
++      role: MEMBER_ROLE,
++      memberId: payload.memberId,
++      fullName: String(member.fullName || ""),
++      updatedAt: new Date().toISOString(),
++      serverUpdatedAt: FieldValue.serverTimestamp()
++    },
++    { merge: true }
++  );
++
++  await db.collection("auditLogs").add({
++    action: "LINK_MEMBER_ACCOUNT",
++    entity: "users",
++    entityId: auth.uid,
++    metadata: { memberId: payload.memberId },
++    uid: auth.uid,
++    email: typeof auth.token.email === "string" ? auth.token.email : "",
++    source: "cloud-function",
++    createdAt: FieldValue.serverTimestamp()
++  });
++
++  return { ok: true, memberId: payload.memberId, fullName: String(member.fullName || "") };
++});
++
++/**
++ * Creates a Razorpay order for an existing `orders/{orderId}` doc. The
++ * amount is always re-derived from Firestore server-side — never trusted
++ * from the client — so a tampered client request can't pay a different
++ * amount than what's actually in the cart/order.
++ */
++export const createMarketplaceOrder = onCall({ cors: true, secrets: [razorpayKeyId, razorpayKeySecret] }, async (request) => {
++  const auth = requireAuth(request);
++  const payload = createMarketplaceOrderSchema.parse(request.data);
++
++  const orderRef = db.collection("orders").doc(payload.orderId);
++  const orderSnap = await orderRef.get();
++  if (!orderSnap.exists) {
++    throw new HttpsError("not-found", "Order not found.");
++  }
++
++  const order = orderSnap.data()!;
++  if (order.uid !== auth.uid) {
++    throw new HttpsError("permission-denied", "This order does not belong to you.");
++  }
++  if (order.status !== "pending_payment") {
++    throw new HttpsError("failed-precondition", "This order is not payable.");
++  }
++
++  const amountPaise = Math.round(Number(order.total || 0) * 100);
++  const credentials = Buffer.from(`${razorpayKeyId.value()}:${razorpayKeySecret.value()}`).toString("base64");
++
++  const response = await fetch("https://api.razorpay.com/v1/orders", {
++    method: "POST",
++    headers: { Authorization: `Basic ${credentials}`, "Content-Type": "application/json" },
++    body: JSON.stringify({ amount: amountPaise, currency: "INR", receipt: payload.orderId })
++  });
++
++  if (!response.ok) {
++    logger.error("Razorpay order creation failed", { status: response.status, body: await response.text() });
++    throw new HttpsError("internal", "Could not start payment. Please try again.");
++  }
++
++  const rzpOrder = (await response.json()) as { id: string; amount: number; currency: string };
++
++  await orderRef.set(
++    { razorpayOrderId: rzpOrder.id, updatedAt: new Date().toISOString(), serverUpdatedAt: FieldValue.serverTimestamp() },
++    { merge: true }
++  );
++
++  return { razorpayOrderId: rzpOrder.id, amount: rzpOrder.amount, currency: rzpOrder.currency, keyId: razorpayKeyId.value() };
++});
++
++/**
++ * Verifies the Razorpay payment signature, then marks the order paid and
++ * decrements stock inside a single transaction. This is the only path that
++ * can ever move an order out of `pending_payment` — Firestore rules block
++ * clients from doing it directly (see firestore.rules).
++ *
++ * IMPORTANT: also register a Razorpay webhook (payment.captured) that calls
++ * this same verification logic as a fallback for users who close the tab
++ * mid-payment — the client-side call alone can be missed.
++ */
++export const verifyMarketplacePayment = onCall({ cors: true, secrets: [razorpayKeySecret] }, async (request) => {
++  const auth = requireAuth(request);
++  const payload = verifyMarketplacePaymentSchema.parse(request.data);
++
++  const expectedSignature = createHmac("sha256", razorpayKeySecret.value())
++    .update(`${payload.razorpay_order_id}|${payload.razorpay_payment_id}`)
++    .digest("hex");
++
++  if (expectedSignature !== payload.razorpay_signature) {
++    throw new HttpsError("invalid-argument", "Payment signature could not be verified.");
++  }
++
++  const orderRef = db.collection("orders").doc(payload.orderId);
++
++  await db.runTransaction(async (tx) => {
++    const orderSnap = await tx.get(orderRef);
++    if (!orderSnap.exists) throw new HttpsError("not-found", "Order not found.");
++    const order = orderSnap.data()!;
++
++    if (order.uid !== auth.uid) throw new HttpsError("permission-denied", "This order does not belong to you.");
++    if (order.status === "paid") return; // idempotent — already processed, likely by webhook
++    if (order.razorpayOrderId !== payload.razorpay_order_id) throw new HttpsError("failed-precondition", "Order mismatch.");
++
++    for (const item of (order.items || []) as { productId: string; name: string; quantity: number }[]) {
++      const productRef = db.collection("products").doc(item.productId);
++      const productSnap = await tx.get(productRef);
++      if (!productSnap.exists) continue;
++      const product = productSnap.data()!;
++      if (Number(product.stock) !== -1) {
++        const newStock = Number(product.stock) - item.quantity;
++        if (newStock < 0) throw new HttpsError("failed-precondition", `Insufficient stock for ${item.name}`);
++        tx.update(productRef, { stock: newStock });
++      }
++    }
++
++    tx.set(
++      orderRef,
++      {
++        status: "paid",
++        razorpayPaymentId: payload.razorpay_payment_id,
++        updatedAt: new Date().toISOString(),
++        serverUpdatedAt: FieldValue.serverTimestamp()
++      },
++      { merge: true }
++    );
++
++    tx.set(db.collection("carts").doc(auth.uid), { items: [], updatedAt: new Date().toISOString() }, { merge: true });
++  });
++
++  await db.collection("auditLogs").add({
++    action: "MARKETPLACE_PAYMENT_CAPTURED",
++    entity: "orders",
++    entityId: payload.orderId,
++    metadata: { razorpayPaymentId: payload.razorpay_payment_id },
++    uid: auth.uid,
++    email: typeof auth.token.email === "string" ? auth.token.email : "",
++    source: "cloud-function",
++    createdAt: FieldValue.serverTimestamp()
++  });
++
++  return { ok: true };
++});
++
++/**
++ * Creates a trainer-session booking with a transactional double-booking
++ * guard — re-checks for a conflicting booking inside the transaction
++ * immediately before committing.
++ */
++export const createBooking = onCall({ cors: true }, async (request) => {
++  const auth = requireAuth(request);
++  const payload = createBookingSchema.parse(request.data);
++
++  const trainerRef = db.collection("trainers").doc(payload.trainerId);
++  const trainerSnap = await trainerRef.get();
++  if (!trainerSnap.exists) throw new HttpsError("not-found", "Trainer not found.");
++  const trainer = trainerSnap.data()!;
++  if (!trainer.bookable) throw new HttpsError("failed-precondition", "This trainer is not open for booking.");
++
++  const userSnap = await db.collection("users").doc(auth.uid).get();
++  const memberId = userSnap.exists ? String(userSnap.data()?.memberId || "") : "";
++
++  const bookingId = await db.runTransaction(async (tx) => {
++    const conflictSnap = await db
++      .collection("bookings")
++      .where("trainerId", "==", payload.trainerId)
++      .where("date", "==", payload.date)
++      .where("startTime", "==", payload.startTime)
++      .where("status", "in", ["pending", "confirmed"])
++      .limit(1)
++      .get();
++
++    if (!conflictSnap.empty) {
++      throw new HttpsError("already-exists", "This slot was just booked. Please pick another.");
++    }
++
++    const ref = db.collection("bookings").doc();
++    tx.set(ref, {
++      uid: auth.uid,
++      memberId,
++      trainerId: payload.trainerId,
++      trainerName: String(trainer.name || ""),
++      date: payload.date,
++      startTime: payload.startTime,
++      endTime: payload.endTime,
++      status: "pending",
++      price: Number(trainer.pricePerSession || 0),
++      createdAt: new Date().toISOString(),
++      updatedAt: new Date().toISOString(),
++      serverUpdatedAt: FieldValue.serverTimestamp()
++    });
++    return ref.id;
++  });
++
++  return { ok: true, bookingId };
++});
++
+ export const syncSubscriptionFromPayment = onDocumentWritten("payments/{paymentId}", async (event) => {
+   const after = event.data?.after.exists ? event.data.after.data() : null;
+   if (!after) {
+diff --git a/apps/web/app/account/orders/page.tsx b/apps/web/app/account/orders/page.tsx
+new file mode 100644
+index 0000000..b6347a8
+--- /dev/null
++++ b/apps/web/app/account/orders/page.tsx
+@@ -0,0 +1,60 @@
++"use client";
++
++import { where } from "firebase/firestore";
++import { useMemo } from "react";
++import { MemberGuard } from "@/components/auth/member-guard";
++import { Card } from "@/components/ui/card";
++import { useApp } from "@/components/providers";
++import { useRealtimeCollection } from "@/hooks/useRealtimeCollection";
++import { formatINR } from "@/lib/marketplace";
++import type { MarketplaceOrder } from "@/lib/firebase-types";
++
++const STATUS_LABEL: Record<MarketplaceOrder["status"], string> = {
++  pending_payment: "Payment pending",
++  paid: "Paid",
++  processing: "Processing",
++  delivered: "Delivered",
++  cancelled: "Cancelled",
++  refunded: "Refunded"
++};
++
++function OrdersInner() {
++  const { user } = useApp();
++  const constraints = useMemo(() => (user ? [where("uid", "==", user.uid)] : []), [user]);
++  const { data: orders, loading } = useRealtimeCollection<MarketplaceOrder>("orders", constraints, { enabled: Boolean(user) });
++
++  if (loading) return <p className="text-white/55">Loading orders…</p>;
++  if (orders.length === 0) return <Card className="py-16 text-center text-white/55">No orders yet.</Card>;
++
++  return (
++    <div className="space-y-3">
++      {orders.map((order) => (
++        <Card key={order.id}>
++          <div className="flex items-center justify-between">
++            <div>
++              <p className="font-semibold">Order #{order.id.slice(0, 8)}</p>
++              <p className="text-sm text-white/55">{order.items.map((i) => `${i.name} × ${i.quantity}`).join(", ")}</p>
++            </div>
++            <div className="text-right">
++              <p className="font-bold">{formatINR(order.total)}</p>
++              <p className="text-xs text-white/55">{STATUS_LABEL[order.status]}</p>
++            </div>
++          </div>
++        </Card>
++      ))}
++    </div>
++  );
++}
++
++export default function OrdersPage() {
++  return (
++    <MemberGuard>
++      <main className="min-h-screen bg-[#050505] px-5 py-8 text-white">
++        <div className="mx-auto max-w-3xl">
++          <h1 className="mb-6 text-2xl font-black">My Orders</h1>
++          <OrdersInner />
++        </div>
++      </main>
++    </MemberGuard>
++  );
++}
+diff --git a/apps/web/app/marketplace/cart/page.tsx b/apps/web/app/marketplace/cart/page.tsx
+new file mode 100644
+index 0000000..a87a78e
+--- /dev/null
++++ b/apps/web/app/marketplace/cart/page.tsx
+@@ -0,0 +1,105 @@
++"use client";
++
++import { useEffect, useState } from "react";
++import { useRouter } from "next/navigation";
++import { MemberGuard } from "@/components/auth/member-guard";
++import { Button } from "@/components/ui/button";
++import { Card } from "@/components/ui/card";
++import { useApp } from "@/components/providers";
++import { getCart, updateCartItemQty, computeTotals, createOrderFromCart, formatINR } from "@/lib/marketplace";
++import { doc, getDoc } from "firebase/firestore";
++import { db } from "@/lib/firebase-firestore";
++import type { Cart } from "@/lib/firebase-types";
++
++function CartInner() {
++  const { user } = useApp();
++  const router = useRouter();
++  const [cart, setCart] = useState<Cart | null>(null);
++  const [loading, setLoading] = useState(true);
++  const [checkingOut, setCheckingOut] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++
++  async function refresh() {
++    if (!user) return;
++    setCart(await getCart(user.uid));
++  }
++
++  useEffect(() => {
++    if (!user) return;
++    refresh().finally(() => setLoading(false));
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [user]);
++
++  async function handleQty(productId: string, qty: number) {
++    if (!user) return;
++    await updateCartItemQty(user.uid, productId, qty);
++    await refresh();
++  }
++
++  async function handleCheckout() {
++    if (!user) return;
++    setCheckingOut(true);
++    setError(null);
++    try {
++      const userSnap = await getDoc(doc(db, "users", user.uid));
++      const memberId = userSnap.exists() ? userSnap.data().memberId : undefined;
++      const orderId = await createOrderFromCart(user.uid, memberId);
++      router.push(`/marketplace/checkout?orderId=${orderId}`);
++    } catch (err: any) {
++      setError(err.message ?? "Could not start checkout.");
++    } finally {
++      setCheckingOut(false);
++    }
++  }
++
++  if (loading) return <p className="text-white/55">Loading cart…</p>;
++  if (!cart || cart.items.length === 0) return <Card className="py-16 text-center text-white/55">Your cart is empty.</Card>;
++
++  const { subtotal, tax, total } = computeTotals(cart.items);
++
++  return (
++    <div className="grid gap-8 md:grid-cols-3">
++      <div className="space-y-3 md:col-span-2">
++        {cart.items.map((item) => (
++          <Card key={item.productId} className="flex items-center justify-between">
++            <div>
++              <p className="font-semibold">{item.name}</p>
++              <p className="text-sm text-white/55">{formatINR(item.price)}</p>
++            </div>
++            <div className="flex items-center rounded-lg border border-white/12">
++              <button onClick={() => handleQty(item.productId, item.quantity - 1)} className="px-3 py-1 text-white/70">−</button>
++              <span className="px-3 text-sm font-semibold">{item.quantity}</span>
++              <button onClick={() => handleQty(item.productId, item.quantity + 1)} className="px-3 py-1 text-white/70">+</button>
++            </div>
++          </Card>
++        ))}
++      </div>
++
++      <Card className="h-fit">
++        <h2 className="mb-4 font-black">Order Summary</h2>
++        <div className="space-y-2 text-sm text-white/70">
++          <div className="flex justify-between"><span>Subtotal</span><span>{formatINR(subtotal)}</span></div>
++          <div className="flex justify-between"><span>GST (18%)</span><span>{formatINR(tax)}</span></div>
++          <div className="mt-2 flex justify-between border-t border-white/10 pt-2 text-base font-bold text-white"><span>Total</span><span>{formatINR(total)}</span></div>
++        </div>
++        {error && <p className="mt-3 text-sm text-[#ffb4b4]">{error}</p>}
++        <Button className="mt-4 w-full justify-center" disabled={checkingOut} onClick={handleCheckout}>
++          {checkingOut ? "Preparing checkout…" : "Proceed to Checkout"}
++        </Button>
++      </Card>
++    </div>
++  );
++}
++
++export default function CartPage() {
++  return (
++    <MemberGuard>
++      <main className="min-h-screen bg-[#050505] px-5 py-8 text-white">
++        <div className="mx-auto max-w-4xl">
++          <h1 className="mb-6 text-2xl font-black">Your Cart</h1>
++          <CartInner />
++        </div>
++      </main>
++    </MemberGuard>
++  );
++}
+diff --git a/apps/web/app/marketplace/checkout/page.tsx b/apps/web/app/marketplace/checkout/page.tsx
+new file mode 100644
+index 0000000..44e1da8
+--- /dev/null
++++ b/apps/web/app/marketplace/checkout/page.tsx
+@@ -0,0 +1,84 @@
++"use client";
++
++import { Suspense, useEffect, useState } from "react";
++import { useRouter, useSearchParams } from "next/navigation";
++import { MemberGuard } from "@/components/auth/member-guard";
++import { Button } from "@/components/ui/button";
++import { Card } from "@/components/ui/card";
++import { getOrder, formatINR } from "@/lib/marketplace";
++import { payForOrder } from "@/lib/razorpay-client";
++import type { MarketplaceOrder } from "@/lib/firebase-types";
++
++function CheckoutInner() {
++  const params = useSearchParams();
++  const orderId = params.get("orderId");
++  const router = useRouter();
++  const [order, setOrder] = useState<MarketplaceOrder | null>(null);
++  const [status, setStatus] = useState<"idle" | "paying" | "success" | "error">("idle");
++  const [error, setError] = useState<string | null>(null);
++
++  useEffect(() => {
++    if (!orderId) return;
++    getOrder(orderId).then(setOrder);
++  }, [orderId]);
++
++  function handlePay() {
++    if (!orderId) return;
++    setStatus("paying");
++    setError(null);
++    payForOrder(
++      orderId,
++      () => {
++        setStatus("success");
++        setTimeout(() => router.push("/account/orders"), 1500);
++      },
++      (msg) => {
++        setStatus("error");
++        setError(msg);
++      }
++    );
++  }
++
++  if (!orderId) return <p className="text-white/55">No order specified.</p>;
++  if (!order) return <p className="text-white/55">Loading order…</p>;
++
++  if (status === "success") {
++    return (
++      <Card className="py-16 text-center">
++        <p className="text-lg font-black">Payment successful 🎉</p>
++        <p className="mt-1 text-white/55">Redirecting to your orders…</p>
++      </Card>
++    );
++  }
++
++  return (
++    <Card className="mx-auto max-w-md">
++      <h2 className="mb-4 font-black">Payment</h2>
++      <div className="space-y-2 text-sm text-white/70">
++        <div className="flex justify-between"><span>Subtotal</span><span>{formatINR(order.subtotal)}</span></div>
++        <div className="flex justify-between"><span>GST</span><span>{formatINR(order.tax)}</span></div>
++        <div className="mt-2 flex justify-between border-t border-white/10 pt-2 text-base font-bold text-white"><span>Total</span><span>{formatINR(order.total)}</span></div>
++      </div>
++      {error && <p className="mt-3 text-sm text-[#ffb4b4]">{error}</p>}
++      <Button className="mt-4 w-full justify-center" disabled={status === "paying"} onClick={handlePay}>
++        {status === "paying" ? "Opening payment…" : `Pay ${formatINR(order.total)}`}
++      </Button>
++      <p className="mt-3 text-center text-xs text-white/40">Secured by Razorpay · UPI, cards, netbanking</p>
++    </Card>
++  );
++}
++
++export default function CheckoutPage() {
++  return (
++    <MemberGuard>
++      <main className="min-h-screen bg-[#050505] px-5 py-8 text-white">
++        <div className="mx-auto max-w-2xl">
++          <h1 className="mb-6 text-2xl font-black">Checkout</h1>
++          <Suspense fallback={<p className="text-white/55">Loading…</p>}>
++            <CheckoutInner />
++          </Suspense>
++        </div>
++      </main>
++    </MemberGuard>
++  );
++}
+diff --git a/apps/web/app/marketplace/page.tsx b/apps/web/app/marketplace/page.tsx
+new file mode 100644
+index 0000000..4734cff
+--- /dev/null
++++ b/apps/web/app/marketplace/page.tsx
+@@ -0,0 +1,108 @@
++"use client";
++
++import { orderBy, where, type QueryConstraint } from "firebase/firestore";
++import Link from "next/link";
++import { useMemo, useState } from "react";
++import { ShoppingCart } from "lucide-react";
++import { MemberGuard } from "@/components/auth/member-guard";
++import { Button } from "@/components/ui/button";
++import { Card } from "@/components/ui/card";
++import { BrandLogo } from "@/components/brand-logo";
++import { useRealtimeCollection } from "@/hooks/useRealtimeCollection";
++import { formatINR } from "@/lib/marketplace";
++import type { Product, ProductCategory } from "@/lib/firebase-types";
++
++const CATEGORIES: { value: ProductCategory | "all"; label: string }[] = [
++  { value: "all", label: "All" },
++  { value: "supplements", label: "Supplements" },
++  { value: "equipment", label: "Equipment" },
++  { value: "apparel", label: "Apparel" },
++  { value: "accessories", label: "Accessories" },
++  { value: "diet-plans", label: "Diet Plans" },
++  { value: "workout-plans", label: "Workout Plans" }
++];
++
++export default function MarketplacePage() {
++  const [category, setCategory] = useState<ProductCategory | "all">("all");
++
++  const constraints = useMemo<QueryConstraint[]>(() => {
++    const base: QueryConstraint[] = [where("active", "==", true)];
++    if (category !== "all") base.push(where("category", "==", category));
++    return [...base, orderBy("updatedAt", "desc")];
++  }, [category]);
++
++  const { data: products, loading } = useRealtimeCollection<Product>("products", constraints);
++
++  return (
++    <MemberGuard>
++      <main className="min-h-screen bg-[#050505] px-5 py-8 text-white">
++        <div className="mx-auto max-w-6xl">
++          <div className="mb-6 flex items-center justify-between">
++            <div className="flex items-center gap-3">
++              <BrandLogo className="h-10 w-20" />
++              <div>
++                <h1 className="text-2xl font-black">Marketplace</h1>
++                <p className="text-xs text-white/55">Supplements, gear, plans, and trainer sessions</p>
++              </div>
++            </div>
++            <div className="flex gap-2">
++              <Link href="/marketplace/trainers">
++                <Button variant="secondary">Book a Trainer</Button>
++              </Link>
++              <Link href="/marketplace/cart">
++                <Button variant="secondary">
++                  <ShoppingCart size={18} /> Cart
++                </Button>
++              </Link>
++              <Link href="/account/orders">
++                <Button variant="ghost">My Orders</Button>
++              </Link>
++            </div>
++          </div>
++
++          <div className="mb-6 flex gap-2 overflow-x-auto pb-2">
++            {CATEGORIES.map((c) => (
++              <button
++                key={c.value}
++                onClick={() => setCategory(c.value)}
++                className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-semibold transition ${
++                  category === c.value ? "bg-[#E10600] text-white" : "border border-white/12 bg-white/8 text-white/70 hover:bg-white/12"
++                }`}
++              >
++                {c.label}
++              </button>
++            ))}
++          </div>
++
++          {loading && <p className="text-white/55">Loading products…</p>}
++          {!loading && products.length === 0 && (
++            <Card className="py-16 text-center text-white/55">No products here yet. Check back soon.</Card>
++          )}
++
++          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
++            {products.map((p) => {
++              const image = p.imagesText?.split(",")[0]?.trim();
++              return (
++                <Link key={p.id} href={`/marketplace/product?id=${p.id}`}>
++                  <Card className="h-full overflow-hidden p-0 transition hover:border-[#E10600]/40">
++                    <div className="aspect-square bg-white/5">
++                      {image && <img src={image} alt={p.name} className="h-full w-full object-cover" />}
++                    </div>
++                    <div className="p-3">
++                      <p className="truncate text-sm font-semibold">{p.name}</p>
++                      <div className="mt-1 flex items-baseline gap-2">
++                        <span className="text-sm font-bold">{formatINR(p.price)}</span>
++                        {p.compareAtPrice ? <span className="text-xs text-white/40 line-through">{formatINR(p.compareAtPrice)}</span> : null}
++                      </div>
++                      {p.stock === 0 && <p className="mt-1 text-xs text-[#ffb4b4]">Out of stock</p>}
++                    </div>
++                  </Card>
++                </Link>
++              );
++            })}
++          </div>
++        </div>
++      </main>
++    </MemberGuard>
++  );
++}
+diff --git a/apps/web/app/marketplace/product/page.tsx b/apps/web/app/marketplace/product/page.tsx
+new file mode 100644
+index 0000000..b15acf7
+--- /dev/null
++++ b/apps/web/app/marketplace/product/page.tsx
+@@ -0,0 +1,104 @@
++"use client";
++
++import { Suspense, useEffect, useState } from "react";
++import { useSearchParams } from "next/navigation";
++import Link from "next/link";
++import { MemberGuard } from "@/components/auth/member-guard";
++import { Button } from "@/components/ui/button";
++import { Card } from "@/components/ui/card";
++import { useApp } from "@/components/providers";
++import { getRecord } from "@/lib/firestore-service";
++import { addToCart, formatINR } from "@/lib/marketplace";
++import type { Product } from "@/lib/firebase-types";
++
++function ProductDetailInner() {
++  const params = useSearchParams();
++  const productId = params.get("id");
++  const { user } = useApp();
++  const [product, setProduct] = useState<Product | null>(null);
++  const [loading, setLoading] = useState(true);
++  const [qty, setQty] = useState(1);
++  const [message, setMessage] = useState<string | null>(null);
++  const [adding, setAdding] = useState(false);
++
++  useEffect(() => {
++    if (!productId) {
++      setLoading(false);
++      return;
++    }
++    getRecord<Product>("products", productId).then((p) => {
++      setProduct(p);
++      setLoading(false);
++    });
++  }, [productId]);
++
++  async function handleAddToCart() {
++    if (!user || !product) return;
++    setAdding(true);
++    setMessage(null);
++    try {
++      await addToCart(user.uid, product, qty);
++      setMessage("Added to cart.");
++    } catch (err: any) {
++      setMessage(err.message ?? "Could not add to cart.");
++    } finally {
++      setAdding(false);
++    }
++  }
++
++  if (loading) return <p className="text-white/55">Loading…</p>;
++  if (!product) return <p className="text-white/55">Product not found.</p>;
++
++  const images = product.imagesText?.split(",").map((s) => s.trim()).filter(Boolean) ?? [];
++
++  return (
++    <div className="grid gap-8 md:grid-cols-2">
++      <Card className="aspect-square overflow-hidden p-0">
++        {images[0] && <img src={images[0]} alt={product.name} className="h-full w-full object-cover" />}
++      </Card>
++
++      <div>
++        <h1 className="text-2xl font-black">{product.name}</h1>
++        <div className="mt-3 flex items-baseline gap-3">
++          <span className="text-2xl font-black">{formatINR(product.price)}</span>
++          {product.compareAtPrice ? <span className="text-base text-white/40 line-through">{formatINR(product.compareAtPrice)}</span> : null}
++        </div>
++        <p className="mt-4 leading-relaxed text-white/70">{product.description}</p>
++
++        {!product.isDigital && (
++          <div className="mt-6 flex items-center gap-3">
++            <div className="flex items-center rounded-lg border border-white/12">
++              <button onClick={() => setQty((q) => Math.max(1, q - 1))} className="px-3 py-2 text-white/70">−</button>
++              <span className="px-4 text-sm font-semibold">{qty}</span>
++              <button onClick={() => setQty((q) => q + 1)} className="px-3 py-2 text-white/70">+</button>
++            </div>
++          </div>
++        )}
++
++        <Button className="mt-4 w-full justify-center" disabled={adding || product.stock === 0} onClick={handleAddToCart}>
++          {product.stock === 0 ? "Out of stock" : adding ? "Adding…" : "Add to Cart"}
++        </Button>
++
++        {message && <p className="mt-3 text-sm text-white/60">{message}</p>}
++
++        <Link href="/marketplace/cart" className="mt-4 block text-sm text-[#E10600] underline">
++          Go to cart →
++        </Link>
++      </div>
++    </div>
++  );
++}
++
++export default function ProductDetailPage() {
++  return (
++    <MemberGuard>
++      <main className="min-h-screen bg-[#050505] px-5 py-8 text-white">
++        <div className="mx-auto max-w-5xl">
++          <Suspense fallback={<p className="text-white/55">Loading…</p>}>
++            <ProductDetailInner />
++          </Suspense>
++        </div>
++      </main>
++    </MemberGuard>
++  );
++}
+diff --git a/apps/web/app/marketplace/trainer/page.tsx b/apps/web/app/marketplace/trainer/page.tsx
+new file mode 100644
+index 0000000..c861514
+--- /dev/null
++++ b/apps/web/app/marketplace/trainer/page.tsx
+@@ -0,0 +1,139 @@
++"use client";
++
++import { Suspense, useEffect, useMemo, useState } from "react";
++import { useSearchParams } from "next/navigation";
++import { httpsCallable } from "firebase/functions";
++import { collection, getDocs, query, where } from "firebase/firestore";
++import { MemberGuard } from "@/components/auth/member-guard";
++import { Button } from "@/components/ui/button";
++import { Card } from "@/components/ui/card";
++import { functions } from "@/lib/firebase-functions";
++import { db } from "@/lib/firebase-firestore";
++import { getRecord } from "@/lib/firestore-service";
++import { parseAvailability, formatINR } from "@/lib/marketplace";
++import type { Booking, Trainer } from "@/lib/firebase-types";
++
++function nextDates(n: number) {
++  return Array.from({ length: n }, (_, i) => {
++    const d = new Date();
++    d.setDate(d.getDate() + i);
++    return d.toISOString().slice(0, 10);
++  });
++}
++
++function TrainerProfileInner() {
++  const params = useSearchParams();
++  const trainerId = params.get("id");
++  const dates = useMemo(() => nextDates(7), []);
++  const [trainer, setTrainer] = useState<Trainer | null>(null);
++  const [loading, setLoading] = useState(true);
++  const [selectedDate, setSelectedDate] = useState(dates[0]);
++  const [bookedSlots, setBookedSlots] = useState<Booking[]>([]);
++  const [booking, setBooking] = useState<string | null>(null);
++  const [message, setMessage] = useState<string | null>(null);
++
++  useEffect(() => {
++    if (!trainerId) return;
++    getRecord<Trainer>("trainers", trainerId).then((t) => {
++      setTrainer(t);
++      setLoading(false);
++    });
++  }, [trainerId]);
++
++  useEffect(() => {
++    if (!trainerId) return;
++    getDocs(query(collection(db, "bookings"), where("trainerId", "==", trainerId), where("date", "==", selectedDate))).then((snap) => {
++      setBookedSlots(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Booking).filter((b) => b.status === "pending" || b.status === "confirmed"));
++    });
++  }, [trainerId, selectedDate]);
++
++  async function handleBook(startTime: string, endTime: string) {
++    if (!trainerId) return;
++    setBooking(startTime);
++    setMessage(null);
++    try {
++      const createBooking = httpsCallable(functions, "createBooking");
++      await createBooking({ trainerId, date: selectedDate, startTime, endTime });
++      setMessage("Session booked! Staff will confirm shortly.");
++      const snap = await getDocs(query(collection(db, "bookings"), where("trainerId", "==", trainerId), where("date", "==", selectedDate)));
++      setBookedSlots(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Booking).filter((b) => b.status === "pending" || b.status === "confirmed"));
++    } catch (err: any) {
++      setMessage(err.message ?? "Could not book this slot.");
++    } finally {
++      setBooking(null);
++    }
++  }
++
++  if (loading) return <p className="text-white/55">Loading…</p>;
++  if (!trainer) return <p className="text-white/55">Trainer not found.</p>;
++
++  const dayOfWeek = new Date(selectedDate).getDay() as 0 | 1 | 2 | 3 | 4 | 5 | 6;
++  const daySlots = parseAvailability(trainer.availabilityText).filter((s) => s.dayOfWeek === dayOfWeek);
++  const isTaken = (startTime: string) => bookedSlots.some((b) => b.startTime === startTime);
++
++  return (
++    <div className="grid gap-8 md:grid-cols-2">
++      <Card className="aspect-[4/5] overflow-hidden p-0">
++        {trainer.photoUrl && <img src={trainer.photoUrl} alt={trainer.name} className="h-full w-full object-cover" />}
++      </Card>
++
++      <div>
++        <h1 className="text-2xl font-black">{trainer.name}</h1>
++        <p className="mt-1 text-sm text-white/55">{trainer.experience} yrs experience · {trainer.specialization}</p>
++        {trainer.bio && <p className="mt-4 leading-relaxed text-white/70">{trainer.bio}</p>}
++        <p className="mt-4 text-lg font-bold">{formatINR(trainer.pricePerSession ?? 0)} / session</p>
++
++        <div className="mt-6">
++          <h2 className="mb-3 font-black">Book a Session</h2>
++          <div className="mb-4 flex gap-2 overflow-x-auto pb-2">
++            {dates.map((d) => (
++              <button
++                key={d}
++                onClick={() => setSelectedDate(d)}
++                className={`whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold ${
++                  selectedDate === d ? "bg-[#E10600] text-white" : "border border-white/12 bg-white/8 text-white/70"
++                }`}
++              >
++                {new Date(d).toLocaleDateString("en-IN", { weekday: "short", day: "numeric" })}
++              </button>
++            ))}
++          </div>
++
++          {daySlots.length === 0 ? (
++            <p className="text-sm text-white/55">No availability on this day.</p>
++          ) : (
++            <div className="grid grid-cols-3 gap-2">
++              {daySlots.map((s) => (
++                <button
++                  key={s.startTime}
++                  disabled={isTaken(s.startTime) || booking === s.startTime}
++                  onClick={() => handleBook(s.startTime, s.endTime)}
++                  className={`rounded-lg border py-2 text-sm ${
++                    isTaken(s.startTime) ? "cursor-not-allowed border-white/8 text-white/25" : "border-white/12 text-white/80 hover:border-[#E10600]"
++                  }`}
++                >
++                  {s.startTime}
++                </button>
++              ))}
++            </div>
++          )}
++          {message && <p className="mt-3 text-sm text-white/60">{message}</p>}
++        </div>
++      </div>
++    </div>
++  );
++}
++
++export default function TrainerProfilePage() {
++  return (
++    <MemberGuard>
++      <main className="min-h-screen bg-[#050505] px-5 py-8 text-white">
++        <div className="mx-auto max-w-5xl">
++          <Suspense fallback={<p className="text-white/55">Loading…</p>}>
++            <TrainerProfileInner />
++          </Suspense>
++        </div>
++      </main>
++    </MemberGuard>
++  );
++}
+diff --git a/apps/web/app/marketplace/trainers/page.tsx b/apps/web/app/marketplace/trainers/page.tsx
+new file mode 100644
+index 0000000..0193110
+--- /dev/null
++++ b/apps/web/app/marketplace/trainers/page.tsx
+@@ -0,0 +1,45 @@
++"use client";
++
++import Link from "next/link";
++import { MemberGuard } from "@/components/auth/member-guard";
++import { Card } from "@/components/ui/card";
++import { useRealtimeCollection } from "@/hooks/useRealtimeCollection";
++import { bookableTrainers, formatINR } from "@/lib/marketplace";
++import type { Trainer } from "@/lib/firebase-types";
++
++export default function TrainerMarketplacePage() {
++  const { data: allTrainers, loading } = useRealtimeCollection<Trainer>("trainers");
++  const trainers = bookableTrainers(allTrainers);
++
++  return (
++    <MemberGuard>
++      <main className="min-h-screen bg-[#050505] px-5 py-8 text-white">
++        <div className="mx-auto max-w-6xl">
++          <h1 className="mb-6 text-2xl font-black">Book a Trainer</h1>
++
++          {loading && <p className="text-white/55">Loading trainers…</p>}
++          {!loading && trainers.length === 0 && (
++            <Card className="py-16 text-center text-white/55">No trainers open for booking yet.</Card>
++          )}
++
++          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
++            {trainers.map((t) => (
++              <Link key={t.id} href={`/marketplace/trainer?id=${t.id}`}>
++                <Card className="h-full overflow-hidden p-0 transition hover:border-[#E10600]/40">
++                  <div className="aspect-[4/5] bg-white/5">
++                    {t.photoUrl && <img src={t.photoUrl} alt={t.name} className="h-full w-full object-cover" />}
++                  </div>
++                  <div className="p-3">
++                    <p className="font-semibold">{t.name}</p>
++                    <p className="mt-0.5 text-xs text-white/55">{t.specialization}</p>
++                    <p className="mt-2 text-sm font-bold">{formatINR(t.pricePerSession ?? 0)}/session</p>
++                  </div>
++                </Card>
++              </Link>
++            ))}
++          </div>
++        </div>
++      </main>
++    </MemberGuard>
++  );
++}
+diff --git a/apps/web/app/member-login/page.tsx b/apps/web/app/member-login/page.tsx
+new file mode 100644
+index 0000000..a231e31
+--- /dev/null
++++ b/apps/web/app/member-login/page.tsx
+@@ -0,0 +1,126 @@
++"use client";
++
++import { httpsCallable } from "firebase/functions";
++import { useState } from "react";
++import { useRouter } from "next/navigation";
++import { BrandLogo } from "@/components/brand-logo";
++import { Button } from "@/components/ui/button";
++import { Card } from "@/components/ui/card";
++import { useApp } from "@/components/providers";
++import { functions } from "@/lib/firebase-functions";
++
++export default function MemberLoginPage() {
++  const { login, signup } = useApp();
++  const router = useRouter();
++  const [mode, setMode] = useState<"signin" | "signup">("signin");
++  const [email, setEmail] = useState("");
++  const [password, setPassword] = useState("");
++  const [memberId, setMemberId] = useState("");
++  const [phone, setPhone] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++
++  async function handleSignIn() {
++    setBusy(true);
++    setError(null);
++    try {
++      await login(email, password);
++      router.push("/marketplace");
++    } catch (err: any) {
++      setError(err.message ?? "Could not sign in.");
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  async function handleSignUp() {
++    setBusy(true);
++    setError(null);
++    try {
++      await signup(email, password);
++      const link = httpsCallable(functions, "linkMemberAccount");
++      await link({ memberId, phone });
++      router.push("/marketplace");
++    } catch (err: any) {
++      setError(err.message ?? "Could not create your account. Check your Member ID and phone number.");
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  return (
++    <main className="grid min-h-screen place-items-center bg-[#050505] px-5 text-white">
++      <Card className="w-full max-w-md">
++        <div className="mb-6 flex items-center gap-3">
++          <BrandLogo className="h-10 w-20" />
++          <div>
++            <p className="text-lg font-black">ELITE FITNESS</p>
++            <p className="text-xs text-white/55">Marketplace member account</p>
++          </div>
++        </div>
++
++        <div className="mb-5 flex gap-2 rounded-lg border border-white/10 p-1">
++          <button
++            onClick={() => setMode("signin")}
++            className={`flex-1 rounded-lg py-2 text-sm font-semibold transition ${mode === "signin" ? "bg-[#E10600] text-white" : "text-white/60"}`}
++          >
++            Sign In
++          </button>
++          <button
++            onClick={() => setMode("signup")}
++            className={`flex-1 rounded-lg py-2 text-sm font-semibold transition ${mode === "signup" ? "bg-[#E10600] text-white" : "text-white/60"}`}
++          >
++            Create Account
++          </button>
++        </div>
++
++        <div className="space-y-3">
++          <input
++            type="email"
++            placeholder="Email"
++            value={email}
++            onChange={(e) => setEmail(e.target.value)}
++            className="h-12 w-full rounded-lg border border-white/10 bg-black/35 px-4 outline-none focus:border-[#E10600]"
++          />
++          <input
++            type="password"
++            placeholder="Password"
++            value={password}
++            onChange={(e) => setPassword(e.target.value)}
++            className="h-12 w-full rounded-lg border border-white/10 bg-black/35 px-4 outline-none focus:border-[#E10600]"
++          />
++
++          {mode === "signup" && (
++            <>
++              <p className="pt-1 text-xs text-white/50">
++                Enter the Member ID and phone number staff registered for you at the front desk.
++              </p>
++              <input
++                placeholder="Member ID (e.g. EF-2026-000123)"
++                value={memberId}
++                onChange={(e) => setMemberId(e.target.value)}
++                className="h-12 w-full rounded-lg border border-white/10 bg-black/35 px-4 outline-none focus:border-[#E10600]"
++              />
++              <input
++                placeholder="Phone number on file"
++                value={phone}
++                onChange={(e) => setPhone(e.target.value)}
++                className="h-12 w-full rounded-lg border border-white/10 bg-black/35 px-4 outline-none focus:border-[#E10600]"
++              />
++            </>
++          )}
++
++          {error && <p className="text-sm text-[#ffb4b4]">{error}</p>}
++
++          <Button
++            className="w-full justify-center"
++            disabled={busy}
++            onClick={mode === "signin" ? handleSignIn : handleSignUp}
++          >
++            {busy ? "Please wait…" : mode === "signin" ? "Sign In" : "Create Account"}
++          </Button>
++        </div>
++      </Card>
++    </main>
++  );
++}
+diff --git a/apps/web/app/store/page.tsx b/apps/web/app/store/page.tsx
+new file mode 100644
+index 0000000..c71e7cd
+--- /dev/null
++++ b/apps/web/app/store/page.tsx
+@@ -0,0 +1,30 @@
++"use client";
++
++import { ModuleManager } from "@/components/modules/module-manager";
++import { productDefaults, productFields, productSchema } from "@/lib/module-config";
++import type { Product } from "@/lib/firebase-types";
++
++export default function StorePage() {
++  return (
++    <ModuleManager<Product>
++      title="Store"
++      subtitle="Marketplace product catalog — supplements, equipment, apparel, diet & workout plans"
++      collectionName="products"
++      schema={productSchema}
++      fields={[...productFields]}
++      defaultValues={productDefaults}
++      searchKeys={["name", "category", "sku"]}
++      columns={[
++        { key: "name", label: "Product" },
++        { key: "category", label: "Category" },
++        { key: "price", label: "Price" },
++        { key: "stock", label: "Stock" },
++        { key: "active", label: "Active" }
++      ]}
++      actions={[
++        { label: "Deactivate", value: { active: false } },
++        { label: "Activate", value: { active: true } }
++      ]}
++    />
++  );
++}
+diff --git a/apps/web/components/auth/member-guard.tsx b/apps/web/components/auth/member-guard.tsx
+new file mode 100644
+index 0000000..a6e51cc
+--- /dev/null
++++ b/apps/web/components/auth/member-guard.tsx
+@@ -0,0 +1,100 @@
++"use client";
++
++// Parallel to components/auth/staff-guard.tsx, but for the MEMBER role
++// instead of staff roles. Members sign in/create an account at
++// /member-login, which links their Firebase Auth account to an existing
++// `members` record via the linkMemberAccount Cloud Function.
++
++import { doc, getDoc } from "firebase/firestore";
++import { Lock, LogIn, ShieldAlert } from "lucide-react";
++import Link from "next/link";
++import { useEffect, useState } from "react";
++import { useApp } from "@/components/providers";
++import { Button } from "@/components/ui/button";
++import { Card } from "@/components/ui/card";
++import { isFirebaseConfigured } from "@/lib/firebase";
++import { db } from "@/lib/firebase-firestore";
++
++export function MemberGuard({ children }: { children: React.ReactNode }) {
++  const { user, authLoading } = useApp();
++  const [roleLoading, setRoleLoading] = useState(false);
++  const [isMember, setIsMember] = useState(false);
++
++  useEffect(() => {
++    let active = true;
++
++    async function loadRole() {
++      if (!user || !isFirebaseConfigured()) {
++        setIsMember(false);
++        setRoleLoading(false);
++        return;
++      }
++
++      setRoleLoading(true);
++      try {
++        const token = await user.getIdTokenResult(true);
++        if (token.claims.role === "MEMBER") {
++          if (active) setIsMember(true);
++          return;
++        }
++        // Staff accounts can also browse/shop — treat any recognized role as allowed.
++        const snapshot = await getDoc(doc(db, "users", user.uid));
++        const role = snapshot.exists() ? snapshot.data().role : null;
++        if (active) setIsMember(Boolean(role));
++      } catch (error) {
++        console.warn("Member role check failed", error);
++        if (active) setIsMember(false);
++      } finally {
++        if (active) setRoleLoading(false);
++      }
++    }
++
++    loadRole();
++    return () => {
++      active = false;
++    };
++  }, [user]);
++
++  if (authLoading || roleLoading) {
++    return (
++      <main className="grid min-h-screen place-items-center bg-[#050505] px-5 text-white">
++        <Card className="max-w-md text-center">
++          <ShieldAlert className="mx-auto text-[#E10600]" size={38} />
++          <h1 className="mt-4 text-2xl font-black">Checking Your Account</h1>
++          <p className="mt-2 text-sm text-white/58">One moment while we verify your session.</p>
++        </Card>
++      </main>
++    );
++  }
++
++  if (!isFirebaseConfigured()) {
++    return (
++      <main className="grid min-h-screen place-items-center bg-[#050505] px-5 text-white">
++        <Card className="max-w-lg text-center">
++          <Lock className="mx-auto text-[#FACC15]" size={40} />
++          <h1 className="mt-4 text-2xl font-black">Firebase Required</h1>
++          <p className="mt-2 text-sm leading-6 text-white/60">Add the `NEXT_PUBLIC_FIREBASE_*` values to `.env.local` to enable the marketplace.</p>
++        </Card>
++      </main>
++    );
++  }
++
++  if (!user || !isMember) {
++    return (
++      <main className="grid min-h-screen place-items-center bg-[#050505] px-5 text-white">
++        <Card className="max-w-md text-center">
++          <Lock className="mx-auto text-[#E10600]" size={40} />
++          <h1 className="mt-4 text-2xl font-black">Member Account Required</h1>
++          <p className="mt-2 text-sm text-white/58">Sign in or create a member account to shop the marketplace and book trainers.</p>
++          <Link className="mt-5 inline-flex" href="/member-login">
++            <Button>
++              <LogIn size={18} /> Member Sign In
++            </Button>
++          </Link>
++        </Card>
++      </main>
++    );
++  }
++
++  return <>{children}</>;
++}
+diff --git a/apps/web/components/layout/sidebar.tsx b/apps/web/components/layout/sidebar.tsx
+index 0da33da..1df52a2 100644
+--- a/apps/web/components/layout/sidebar.tsx
++++ b/apps/web/components/layout/sidebar.tsx
+@@ -1,6 +1,6 @@
+ "use client";
+ 
+-import { Activity, BadgeIndianRupee, Bell, ChartNoAxesCombined, Dumbbell, FileSearch, LayoutDashboard, LogOut, Package, ReceiptText, Settings, Users } from "lucide-react";
++import { Activity, BadgeIndianRupee, Bell, ChartNoAxesCombined, Dumbbell, FileSearch, LayoutDashboard, LogOut, Package, ReceiptText, Settings, ShoppingBag, Users } from "lucide-react";
+ import Link from "next/link";
+ import { usePathname } from "next/navigation";
+ import { BrandLogo } from "@/components/brand-logo";
+@@ -14,6 +14,7 @@ const nav = [
+   { label: "Payments", href: "/payments", icon: BadgeIndianRupee },
+   { label: "Attendance", href: "/attendance", icon: Activity },
+   { label: "Trainers", href: "/trainers", icon: Dumbbell },
++  { label: "Store", href: "/store", icon: ShoppingBag },
+   { label: "Expenses", href: "/expenses", icon: ReceiptText },
+   { label: "Reports", href: "/reports", icon: ChartNoAxesCombined },
+   { label: "Notifications", href: "/notifications", icon: Bell },
+diff --git a/apps/web/components/providers.tsx b/apps/web/components/providers.tsx
+index fb52fdb..5c1542d 100644
+--- a/apps/web/components/providers.tsx
++++ b/apps/web/components/providers.tsx
+@@ -1,7 +1,7 @@
+ "use client";
+ 
+ import { createContext, useContext, useEffect, useMemo, useState } from "react";
+-import { onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signOut, type User } from "firebase/auth";
++import { createUserWithEmailAndPassword, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signOut, type User } from "firebase/auth";
+ import { usePathname } from "next/navigation";
+ import { isFirebaseConfigured } from "@/lib/firebase";
+ import { auth } from "@/lib/firebase-auth";
+@@ -12,6 +12,7 @@ type AppContextValue = {
+   user: User | null;
+   authLoading: boolean;
+   login: (email: string, password: string) => Promise<void>;
++  signup: (email: string, password: string) => Promise<void>;
+   logout: () => Promise<void>;
+   resetPassword: (email: string) => Promise<void>;
+   toast: (title: string, tone?: Toast["tone"]) => void;
+@@ -26,7 +27,22 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
+   const [toasts, setToasts] = useState<Toast[]>([]);
+ 
+   useEffect(() => {
+-    const needsAuth = pathname === "/login" || pathname.startsWith("/staff") || pathname.startsWith("/members") || pathname.startsWith("/payments") || pathname.startsWith("/reports") || pathname.startsWith("/attendance") || pathname.startsWith("/packages") || pathname.startsWith("/trainers") || pathname.startsWith("/expenses") || pathname.startsWith("/notifications") || pathname.startsWith("/settings");
++    const needsAuth =
++      pathname === "/login" ||
++      pathname === "/member-login" ||
++      pathname.startsWith("/staff") ||
++      pathname.startsWith("/members") ||
++      pathname.startsWith("/payments") ||
++      pathname.startsWith("/reports") ||
++      pathname.startsWith("/attendance") ||
++      pathname.startsWith("/packages") ||
++      pathname.startsWith("/trainers") ||
++      pathname.startsWith("/expenses") ||
++      pathname.startsWith("/notifications") ||
++      pathname.startsWith("/settings") ||
++      pathname.startsWith("/store") ||
++      pathname.startsWith("/marketplace") ||
++      pathname.startsWith("/account");
+ 
+     if (!needsAuth) {
+       setUser(null);
+@@ -52,6 +68,9 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
+       login: async (email, password) => {
+         await signInWithEmailAndPassword(auth, email, password);
+       },
++      signup: async (email, password) => {
++        await createUserWithEmailAndPassword(auth, email, password);
++      },
+       logout: () => signOut(auth),
+       resetPassword: async (email) => {
+         await sendPasswordResetEmail(auth, email);
+diff --git a/apps/web/lib/firebase-types.ts b/apps/web/lib/firebase-types.ts
+index a0317be..e0eee1d 100644
+--- a/apps/web/lib/firebase-types.ts
++++ b/apps/web/lib/firebase-types.ts
+@@ -93,6 +93,17 @@ export type Trainer = BaseRecord & {
+   certificates: string;
+   assignedMembers: string;
+   status: "Active" | "Inactive";
++  // Optional marketplace-facing fields — additive, existing Trainer records
++  // work fine without these (booking UI just shows fewer details).
++  bio?: string;
++  photoUrl?: string;
++  pricePerSession?: number;
++  bookable?: boolean;
++  // Simple "Mon 06:00-07:00, Wed 06:00-07:00" text format — kept as plain
++  // text rather than a nested array so it fits the existing ModuleManager
++  // form (text/number/date/select/textarea fields only). Parsed by
++  // lib/marketplace.ts at render time.
++  availabilityText?: string;
+ };
+ 
+ export type Expense = BaseRecord & {
+@@ -123,6 +134,73 @@ export type NotificationRecord = BaseRecord & {
+   paymentAction?: string;
+ };
+ 
++export type ProductCategory = "supplements" | "equipment" | "apparel" | "accessories" | "diet-plans" | "workout-plans";
++
++export type Product = BaseRecord & {
++  name: string;
++  description: string;
++  category: ProductCategory;
++  imagesText?: string; // comma-separated URLs; split with .split(",").map(s => s.trim())
++  price: number; // rupees, matches GymPackage/Payment convention (no paise)
++  compareAtPrice?: number;
++  stock: number; // -1 = unlimited (digital goods)
++  isDigital: boolean;
++  active: boolean;
++  sku?: string;
++  ratingAvg?: number;
++  ratingCount?: number;
++};
++
++export type MarketplaceOrderStatus = "pending_payment" | "paid" | "processing" | "delivered" | "cancelled" | "refunded";
++
++export type MarketplaceOrderItem = {
++  productId: string;
++  name: string;
++  price: number;
++  quantity: number;
++};
++
++export type MarketplaceOrder = BaseRecord & {
++  uid: string; // Firebase Auth uid of the buying member
++  memberId?: string; // linked members/{doc}.memberId, if account is linked
++  items: MarketplaceOrderItem[];
++  subtotal: number;
++  tax: number;
++  total: number;
++  status: MarketplaceOrderStatus;
++  razorpayOrderId?: string;
++  razorpayPaymentId?: string;
++  shippingAddress?: string;
++};
++
++export type CartItem = {
++  productId: string;
++  name: string;
++  price: number;
++  quantity: number;
++};
++
++export type Cart = BaseRecord & {
++  uid: string;
++  items: CartItem[];
++};
++
++export type TrainerAvailabilitySlot = { dayOfWeek: 0 | 1 | 2 | 3 | 4 | 5 | 6; startTime: string; endTime: string };
++
++export type BookingStatus = "pending" | "confirmed" | "completed" | "cancelled";
++
++export type Booking = BaseRecord & {
++  uid: string;
++  memberId?: string;
++  trainerId: string;
++  trainerName: string;
++  date: string; // "2026-07-10"
++  startTime: string;
++  endTime: string;
++  status: BookingStatus;
++  price: number;
++};
++
+ export type GymSettings = BaseRecord & {
+   gymName: string;
+   addressLine1: string;
+diff --git a/apps/web/lib/firestore-service.ts b/apps/web/lib/firestore-service.ts
+index 3da5b03..7f5db96 100644
+--- a/apps/web/lib/firestore-service.ts
++++ b/apps/web/lib/firestore-service.ts
+@@ -29,7 +29,11 @@ export type CollectionName =
+   | "expenses"
+   | "notifications"
+   | "settings"
+-  | "auditLogs";
++  | "auditLogs"
++  | "products"
++  | "orders"
++  | "carts"
++  | "bookings";
+ 
+ function serialize(data: DocumentData) {
+   const output: Record<string, unknown> = {};
+diff --git a/apps/web/lib/marketplace.ts b/apps/web/lib/marketplace.ts
+new file mode 100644
+index 0000000..de037cc
+--- /dev/null
++++ b/apps/web/lib/marketplace.ts
+@@ -0,0 +1,130 @@
++// Elite Fitness — Marketplace client helpers.
++// Built on top of the existing lib/firestore-service.ts CRUD helpers so it
++// follows the same conventions as every other module (members, packages...).
++
++import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from "firebase/firestore";
++import { db } from "./firebase-firestore";
++import { createRecord, getRecord } from "./firestore-service";
++import type { Cart, CartItem, MarketplaceOrder, Product, Trainer, TrainerAvailabilitySlot } from "./firebase-types";
++
++const TAX_RATE = 0.18; // GST 18% — adjust per category if your gym needs a split rate
++
++export function formatINR(amount: number) {
++  return `₹${amount.toLocaleString("en-IN")}`;
++}
++
++export function computeTotals(items: CartItem[]) {
++  const subtotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
++  const tax = Math.round(subtotal * TAX_RATE);
++  return { subtotal, tax, total: subtotal + tax };
++}
++
++// ---------- Cart ----------
++// Cart doc id == uid, same one-active-cart-per-user model used elsewhere.
++
++export async function getCart(uid: string): Promise<Cart | null> {
++  const snap = await getDoc(doc(db, "carts", uid));
++  return snap.exists() ? ({ id: snap.id, ...snap.data() } as Cart) : null;
++}
++
++export async function addToCart(uid: string, product: Product, quantity = 1): Promise<void> {
++  if (product.stock !== -1 && product.stock < quantity) throw new Error("Out of stock");
++
++  const ref = doc(db, "carts", uid);
++  const snap = await getDoc(ref);
++  const newItem: CartItem = { productId: product.id, name: product.name, price: product.price, quantity };
++
++  if (!snap.exists()) {
++    await setDoc(ref, { uid, items: [newItem], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
++    return;
++  }
++
++  const cart = snap.data() as Cart;
++  const items = [...cart.items];
++  const idx = items.findIndex((i) => i.productId === product.id);
++  if (idx >= 0) items[idx].quantity += quantity;
++  else items.push(newItem);
++  await updateDoc(ref, { items, updatedAt: new Date().toISOString() });
++}
++
++export async function updateCartItemQty(uid: string, productId: string, quantity: number): Promise<void> {
++  const ref = doc(db, "carts", uid);
++  const snap = await getDoc(ref);
++  if (!snap.exists()) return;
++  const cart = snap.data() as Cart;
++  const items =
++    quantity <= 0
++      ? cart.items.filter((i) => i.productId !== productId)
++      : cart.items.map((i) => (i.productId === productId ? { ...i, quantity } : i));
++  await updateDoc(ref, { items, updatedAt: new Date().toISOString() });
++}
++
++// ---------- Orders ----------
++
++/**
++ * Creates an order in `pending_payment` status from the cart. Stock is not
++ * touched here — it's decremented only on payment capture, server-side, so
++ * an abandoned checkout never holds inventory hostage. See
++ * verifyMarketplacePayment in apps/api/src/index.ts.
++ */
++export async function createOrderFromCart(uid: string, memberId?: string): Promise<string> {
++  const cart = await getCart(uid);
++  if (!cart || cart.items.length === 0) throw new Error("Your cart is empty.");
++
++  for (const item of cart.items) {
++    const product = await getRecord<Product>("products", item.productId);
++    if (!product || !product.active) throw new Error(`${item.name} is no longer available.`);
++    if (product.stock !== -1 && product.stock < item.quantity) throw new Error(`${item.name} has insufficient stock.`);
++  }
++
++  const { subtotal, tax, total } = computeTotals(cart.items);
++
++  return createRecord("orders", {
++    uid,
++    memberId: memberId ?? "",
++    items: cart.items,
++    subtotal,
++    tax,
++    total,
++    status: "pending_payment"
++  });
++}
++
++export async function getOrder(orderId: string): Promise<MarketplaceOrder | null> {
++  return getRecord<MarketplaceOrder>("orders", orderId);
++}
++
++// ---------- Trainer availability ----------
++// availabilityText uses the plain-text format "Mon 06:00-07:00, Wed 06:00-07:00"
++// so it fits the existing ModuleManager textarea field — no schema migration
++// needed for a nested array type.
++
++const DAY_MAP: Record<string, TrainerAvailabilitySlot["dayOfWeek"]> = {
++  sun: 0,
++  mon: 1,
++  tue: 2,
++  wed: 3,
++  thu: 4,
++  fri: 5,
++  sat: 6
++};
++
++export function parseAvailability(text?: string): TrainerAvailabilitySlot[] {
++  if (!text) return [];
++  return text
++    .split(",")
++    .map((chunk) => chunk.trim())
++    .filter(Boolean)
++    .map((chunk) => {
++      const [dayRaw, range] = chunk.split(/\s+/, 2);
++      const [startTime, endTime] = (range || "").split("-");
++      const dayOfWeek = DAY_MAP[dayRaw?.toLowerCase().slice(0, 3)];
++      if (dayOfWeek === undefined || !startTime || !endTime) return null;
++      return { dayOfWeek, startTime, endTime };
++    })
++    .filter((slot): slot is TrainerAvailabilitySlot => slot !== null);
++}
++
++export function bookableTrainers(trainers: Trainer[]): Trainer[] {
++  return trainers.filter((t) => t.bookable && t.status === "Active");
++}
+diff --git a/apps/web/lib/module-config.ts b/apps/web/lib/module-config.ts
+index 0728f91..844cddd 100644
+--- a/apps/web/lib/module-config.ts
++++ b/apps/web/lib/module-config.ts
+@@ -226,7 +226,22 @@ export const trainerSchema = z.object({
+   status: z.enum(["Active", "Inactive"])
+ });
+ 
+-export const trainerDefaults = { name: "", phone: "", email: "", specialization: "", experience: 0, salary: 0, certificates: "", assignedMembers: "", status: "Active" };
++export const trainerDefaults = {
++  name: "",
++  phone: "",
++  email: "",
++  specialization: "",
++  experience: 0,
++  salary: 0,
++  certificates: "",
++  assignedMembers: "",
++  status: "Active",
++  bio: "",
++  photoUrl: "",
++  pricePerSession: 0,
++  bookable: false,
++  availabilityText: ""
++};
+ 
+ export const trainerFields = [
+   { name: "name", label: "Name" },
+@@ -237,7 +252,51 @@ export const trainerFields = [
+   { name: "salary", label: "Salary", type: "number" },
+   { name: "certificates", label: "Certificates", type: "textarea" },
+   { name: "assignedMembers", label: "Assigned Members", type: "textarea" },
+-  { name: "status", label: "Status", type: "select", options: ["Active", "Inactive"] }
++  { name: "status", label: "Status", type: "select", options: ["Active", "Inactive"] },
++  { name: "bio", label: "Marketplace Bio", type: "textarea" },
++  { name: "photoUrl", label: "Marketplace Photo URL" },
++  { name: "pricePerSession", label: "Price Per Session (₹)", type: "number" },
++  { name: "bookable", label: "Bookable in Marketplace", type: "checkbox" },
++  { name: "availabilityText", label: "Availability (e.g. \"Mon 06:00-07:00, Wed 06:00-07:00\")", type: "textarea" }
++] as const;
++
++export const productSchema = z.object({
++  name: z.string().min(2),
++  description: z.string().min(5),
++  category: z.enum(["supplements", "equipment", "apparel", "accessories", "diet-plans", "workout-plans"]),
++  price: z.coerce.number().positive(),
++  compareAtPrice: z.coerce.number().min(0).optional(),
++  stock: z.coerce.number(),
++  isDigital: z.boolean(),
++  active: z.boolean(),
++  sku: z.string().optional(),
++  imagesText: z.string().optional() // comma-separated URLs, split in the UI layer
++});
++
++export const productDefaults = {
++  name: "",
++  description: "",
++  category: "supplements",
++  price: 0,
++  compareAtPrice: 0,
++  stock: 0,
++  isDigital: false,
++  active: true,
++  sku: "",
++  imagesText: ""
++};
++
++export const productFields = [
++  { name: "name", label: "Name" },
++  { name: "category", label: "Category", type: "select", options: ["supplements", "equipment", "apparel", "accessories", "diet-plans", "workout-plans"] },
++  { name: "description", label: "Description", type: "textarea" },
++  { name: "price", label: "Price (₹)", type: "number" },
++  { name: "compareAtPrice", label: "Compare-at Price (₹)", type: "number" },
++  { name: "stock", label: "Stock (-1 = unlimited)", type: "number" },
++  { name: "isDigital", label: "Digital Product", type: "checkbox" },
++  { name: "active", label: "Active / Visible", type: "checkbox" },
++  { name: "sku", label: "SKU" },
++  { name: "imagesText", label: "Image URLs (comma-separated)", type: "textarea" }
+ ] as const;
+ 
+ export const expenseSchema = z.object({ category: z.string().min(2), amount: z.coerce.number().min(0), vendor: z.string().optional(), description: z.string().min(2), spentAt: z.string().min(4) });
+diff --git a/apps/web/lib/razorpay-client.ts b/apps/web/lib/razorpay-client.ts
+new file mode 100644
+index 0000000..bc61c4f
+--- /dev/null
++++ b/apps/web/lib/razorpay-client.ts
+@@ -0,0 +1,63 @@
++// Elite Fitness — Marketplace payments.
++// Calls the createMarketplaceOrder / verifyMarketplacePayment callables in
++// apps/api rather than any Next.js API route — the web app is a static
++// export (next.config.ts: output: "export"), so there is no server runtime
++// to host API routes in. Firebase Cloud Functions is the only backend.
++
++import { httpsCallable } from "firebase/functions";
++import { functions } from "./firebase-functions";
++
++declare global {
++  interface Window {
++    Razorpay: any;
++  }
++}
++
++function loadRazorpayScript(): Promise<boolean> {
++  return new Promise((resolve) => {
++    if (document.querySelector('script[src="https://checkout.razorpay.com/v1/checkout.js"]')) return resolve(true);
++    const script = document.createElement("script");
++    script.src = "https://checkout.razorpay.com/v1/checkout.js";
++    script.onload = () => resolve(true);
++    script.onerror = () => resolve(false);
++    document.body.appendChild(script);
++  });
++}
++
++export async function payForOrder(orderId: string, onSuccess: () => void, onFailure: (message: string) => void) {
++  const loaded = await loadRazorpayScript();
++  if (!loaded) return onFailure("Could not load the payment gateway. Check your connection.");
++
++  try {
++    const createOrder = httpsCallable<{ orderId: string }, { razorpayOrderId: string; amount: number; currency: string; keyId: string }>(
++      functions,
++      "createMarketplaceOrder"
++    );
++    const { data } = await createOrder({ orderId });
++
++    const rzp = new window.Razorpay({
++      key: data.keyId,
++      amount: data.amount,
++      currency: data.currency,
++      name: "Elite Fitness",
++      description: "Marketplace order",
++      order_id: data.razorpayOrderId,
++      theme: { color: "#E10600" },
++      handler: async (response: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) => {
++        try {
++          const verify = httpsCallable(functions, "verifyMarketplacePayment");
++          await verify({ orderId, ...response });
++          onSuccess();
++        } catch (err: any) {
++          onFailure(err?.message ?? "Payment could not be verified. Contact staff if you were charged.");
++        }
++      },
++      modal: { ondismiss: () => onFailure("Payment cancelled.") }
++    });
++
++    rzp.on("payment.failed", (resp: any) => onFailure(resp.error?.description ?? "Payment failed."));
++    rzp.open();
++  } catch (err: any) {
++    onFailure(err?.message ?? "Could not start payment.");
++  }
++}
+diff --git a/firestore.rules b/firestore.rules
+index 9b40a88..0ee2e2f 100644
+--- a/firestore.rules
++++ b/firestore.rules
+@@ -22,6 +22,10 @@ service cloud.firestore {
+       return role() in ['SUPER_ADMIN', 'GYM_MANAGER'];
+     }
+ 
++    function isStaff() {
++      return role() in ['SUPER_ADMIN', 'GYM_MANAGER', 'RECEPTIONIST', 'TRAINER', 'ACCOUNTANT'];
++    }
++
+     match /users/{userId} {
+       allow read: if signedIn() && (request.auth.uid == userId || canManageSystem());
+       allow create, update, delete: if canManageSystem();
+@@ -90,5 +94,43 @@ service cloud.firestore {
+       allow read: if canManageSystem();
+       allow write: if false;
+     }
++
++    // ---------- Marketplace ----------
++    // Any signed-in user (staff or member) can browse the catalog; only
++    // staff can edit it — same shape as /packages and /trainers above.
++    match /products/{docId} {
++      allow read: if signedIn();
++      allow write: if isStaff();
++    }
++
++    // A cart document's id is always the owning user's uid, so ownership is
++    // a straight uid comparison rather than a stored field lookup.
++    match /carts/{uid} {
++      allow read, write: if signedIn() && request.auth.uid == uid;
++    }
++
++    // Orders are created client-side only in `pending_payment` status.
++    // Every later transition (paid, refunded, etc.) happens exclusively
++    // through the verifyMarketplacePayment Cloud Function using the Admin
++    // SDK, which bypasses these rules entirely — a client can never mark
++    // its own order paid.
++    match /orders/{docId} {
++      allow read: if signedIn() && (resource.data.uid == request.auth.uid || isStaff());
++      allow create: if signedIn()
++        && request.resource.data.uid == request.auth.uid
++        && request.resource.data.status == 'pending_payment';
++      allow update: if isStaff(); // staff can update fulfillment status (e.g. shipped)
++      allow delete: if false;
++    }
++
++    // Bookings are created through the createBooking Cloud Function (which
++    // holds the double-booking guard), so client-side create is disabled —
++    // members only read their own bookings and staff manage all of them.
++    match /bookings/{docId} {
++      allow read: if signedIn() && (resource.data.uid == request.auth.uid || isStaff());
++      allow create: if false;
++      allow update: if signedIn() && (resource.data.uid == request.auth.uid || isStaff());
++      allow delete: if false;
++    }
+   }
+ }
