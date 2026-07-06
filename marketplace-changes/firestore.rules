@@ -1,0 +1,136 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function role() {
+      return signedIn() && request.auth.token.role != null
+        ? request.auth.token.role
+        : signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : null;
+    }
+
+    function canWriteOperations() {
+      return role() in ['SUPER_ADMIN', 'GYM_MANAGER', 'RECEPTIONIST', 'ACCOUNTANT'];
+    }
+
+    function canManageSystem() {
+      return role() in ['SUPER_ADMIN', 'GYM_MANAGER'];
+    }
+
+    function isStaff() {
+      return role() in ['SUPER_ADMIN', 'GYM_MANAGER', 'RECEPTIONIST', 'TRAINER', 'ACCOUNTANT'];
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || canManageSystem());
+      allow create, update, delete: if canManageSystem();
+    }
+
+    match /settings/{settingId} {
+      allow read: if signedIn();
+      allow write: if canManageSystem();
+    }
+
+    match /members/{docId} {
+      allow read: if signedIn();
+      allow create, update: if canWriteOperations();
+      allow delete: if canManageSystem();
+    }
+
+    match /packages/{docId} {
+      allow read: if signedIn();
+      allow write: if canManageSystem();
+    }
+
+    match /payments/{docId} {
+      allow read: if signedIn();
+      allow create, update: if role() in ['SUPER_ADMIN', 'GYM_MANAGER', 'RECEPTIONIST', 'ACCOUNTANT'];
+      allow delete: if canManageSystem();
+    }
+
+    match /attendance/{docId} {
+      allow read: if signedIn();
+      allow create, update: if role() in ['SUPER_ADMIN', 'GYM_MANAGER', 'RECEPTIONIST', 'TRAINER'];
+      allow delete: if canManageSystem();
+    }
+
+    match /trainers/{docId} {
+      allow read: if signedIn();
+      allow write: if canManageSystem();
+    }
+
+    match /expenses/{docId} {
+      allow read: if signedIn();
+      allow write: if role() in ['SUPER_ADMIN', 'GYM_MANAGER', 'ACCOUNTANT'];
+    }
+
+    match /reports/{docId} {
+      allow read: if signedIn();
+      allow write: if canManageSystem();
+    }
+
+    match /notifications/{docId} {
+      allow read: if signedIn();
+      allow create, update: if canWriteOperations();
+      allow delete: if canManageSystem();
+    }
+
+    match /memberDevices/{docId} {
+      allow read: if canManageSystem();
+      allow create, update, delete: if false;
+    }
+
+    match /auditLogs/{docId} {
+      allow read: if canManageSystem();
+      allow create, update, delete: if false;
+    }
+
+    match /systemJobs/{docId} {
+      allow read: if canManageSystem();
+      allow write: if false;
+    }
+
+    // ---------- Marketplace ----------
+    // Any signed-in user (staff or member) can browse the catalog; only
+    // staff can edit it — same shape as /packages and /trainers above.
+    match /products/{docId} {
+      allow read: if signedIn();
+      allow write: if isStaff();
+    }
+
+    // A cart document's id is always the owning user's uid, so ownership is
+    // a straight uid comparison rather than a stored field lookup.
+    match /carts/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    // Orders are created client-side only in `pending_payment` status.
+    // Every later transition (paid, refunded, etc.) happens exclusively
+    // through the verifyMarketplacePayment Cloud Function using the Admin
+    // SDK, which bypasses these rules entirely — a client can never mark
+    // its own order paid.
+    match /orders/{docId} {
+      allow read: if signedIn() && (resource.data.uid == request.auth.uid || isStaff());
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'pending_payment';
+      allow update: if isStaff(); // staff can update fulfillment status (e.g. shipped)
+      allow delete: if false;
+    }
+
+    // Bookings are created through the createBooking Cloud Function (which
+    // holds the double-booking guard), so client-side create is disabled —
+    // members only read their own bookings and staff manage all of them.
+    match /bookings/{docId} {
+      allow read: if signedIn() && (resource.data.uid == request.auth.uid || isStaff());
+      allow create: if false;
+      allow update: if signedIn() && (resource.data.uid == request.auth.uid || isStaff());
+      allow delete: if false;
+    }
+  }
+}
