@@ -107,6 +107,10 @@ export function UserDashboard() {
   const [memberLink, setMemberLink] = useState<MemberLink>({ memberId: "", phone: "" });
   const [linkStatus, setLinkStatus] = useState("Link your member ID to receive plan expiry reminders.");
 
+  const [ageError, setAgeError] = useState("");
+  const [heightError, setHeightError] = useState("");
+  const [weightError, setWeightError] = useState("");
+
   useEffect(() => {
     const storedProfile = getStoredProfile();
     setProfile(storedProfile);
@@ -370,7 +374,7 @@ export function UserDashboard() {
             <div className="grid gap-4 md:grid-cols-2">
               <label>
                 <span className="mb-2 block text-sm text-white/65">Name</span>
-                <input className="h-11 w-full rounded-lg border border-white/10 bg-black/35 px-3 outline-none" value={profile.name} onChange={(event) => updateProfile("name", event.target.value)} />
+              <input className="h-11 w-full rounded-lg border border-white/10 bg-black/35 px-3 outline-none" type="text" maxLength={50} value={profile.name} onChange={(e) => updateProfile("name", e.target.value)} />           
               </label>
               <label>
                 <span className="mb-2 block text-sm text-white/65">Goal</span>
@@ -382,9 +386,7 @@ export function UserDashboard() {
               </label>
               <label>
                 <span className="mb-2 block text-sm text-white/65">Age</span>
-                <input className="h-11 w-full rounded-lg border border-white/10 bg-black/35 px-3 outline-none" type="number" value={profile.age} onChange={(event) => updateProfile("age", Number(event.target.value))} />
-              </label>
-              <label>
+              <input className="h-11 w-full rounded-lg border border-white/10 bg-black/35 px-3 outline-none" type="number" min={1} max={120} value={profile.age} onFocus={(e) => e.target.select()} onClick={(e) => e.currentTarget.select()} onChange={(e) => { updateProfile("age", Number(e.target.value)); setAgeError(""); }} onBlur={() => { if (profile.age < 1 || profile.age > 120) setAgeError("Age must be between 1 and 120."); else setAgeError(""); }} />{ageError && <p className="mt-1 text-sm text-red-500">{ageError}</p>}
                 <span className="mb-2 block text-sm text-white/65">Sex</span>
                 <select className="h-11 w-full rounded-lg border border-white/10 bg-[#111111] px-3 outline-none" value={profile.sex} onChange={(event) => updateProfile("sex", event.target.value as Sex)}>
                   <option>Male</option>
@@ -393,12 +395,10 @@ export function UserDashboard() {
               </label>
               <label>
                 <span className="mb-2 block text-sm text-white/65">Height cm</span>
-                <input className="h-11 w-full rounded-lg border border-white/10 bg-black/35 px-3 outline-none" type="number" value={profile.height} onChange={(event) => updateProfile("height", Number(event.target.value))} />
-              </label>
-              <label>
+              <input className="h-11 w-full rounded-lg border border-white/10 bg-black/35 px-3 outline-none" type="number" min={50} max={300} value={profile.height} onFocus={(e) => e.target.select()} onClick={(e) => e.currentTarget.select()} onChange={(e) => { updateProfile("height", Number(e.target.value)); setHeightError(""); }} onBlur={() => { if (profile.height < 50 || profile.height > 300) setHeightError("Height must be between 50 and 300 cm."); else setHeightError(""); }} />{heightError && <p className="mt-1 text-sm text-red-500">{heightError}</p>} 
                 <span className="mb-2 block text-sm text-white/65">Weight kg</span>
-                <input className="h-11 w-full rounded-lg border border-white/10 bg-black/35 px-3 outline-none" type="number" value={profile.weight} onChange={(event) => updateProfile("weight", Number(event.target.value))} />
-              </label>
+              <input className="h-11 w-full rounded-lg border border-white/10 bg-black/35 px-3 outline-none" type="number" min={1} max={500} value={profile.weight} onFocus={(e) => e.target.select()} onClick={(e) => e.currentTarget.select()} onChange={(e) => { updateProfile("weight", Number(e.target.value)); setWeightError(""); }} onBlur={() => { if (profile.weight < 10 || profile.weight > 500) setWeightError("Weight must be between 10 and 500 kg."); else setWeightError(""); }} /> {weightError && <p className="mt-1 text-sm text-red-500">{weightError}</p>}           
+              </label>   
             </div>
           </Card>
 
