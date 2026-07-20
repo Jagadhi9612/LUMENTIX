@@ -104,8 +104,12 @@ export function UserDashboard() {
   const [checkIns, setCheckIns] = useState<CheckIn[]>([]);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [notificationStatus, setNotificationStatus] = useState("Not enabled");
-  const [memberLink, setMemberLink] = useState<MemberLink>({ memberId: "", phone: "" });
-  const [linkStatus, setLinkStatus] = useState("Link your member ID to receive plan expiry reminders.");
+  const [memberLink, setMemberLink] = useState<MemberLink>({ memberId: "", phone: "", membershipEnd: "" });
+  const [linkStatus, setLinkStatus] = useState("Stay informed about your membership renewal.");
+
+  const [memberIdError, setMemberIdError] = useState("");
+  const [phoneError, setPhoneError] = useState("");
+  const [planDateError, setPlanDateError] = useState("");
 
   const [ageError, setAgeError] = useState("");
   const [heightError, setHeightError] = useState("");
@@ -206,6 +210,46 @@ export function UserDashboard() {
     };
   }, [profile]);
 
+  const membershipStatus = useMemo(() => {
+  if (!memberLink.membershipEnd) return null;
+
+  const today = new Date();
+  const expiry = new Date(memberLink.membershipEnd);
+
+  today.setHours(0, 0, 0, 0);
+  expiry.setHours(0, 0, 0, 0);
+
+  const diff = Math.ceil(
+    (expiry.getTime() - today.getTime()) /
+      (1000 * 60 * 60 * 24)
+  );
+
+  if (diff < 0) {
+    return {
+      label: "Expired",
+      color: "text-red-400",
+      dot: "bg-red-500",
+      message: "Membership has expired"
+    };
+  }
+
+  if (diff <= 7) {
+    return {
+      label: "Expiring Soon",
+      color: "text-yellow-400",
+      dot: "bg-yellow-500",
+      message: `Expires in ${diff} day${diff !== 1 ? "s" : ""}`
+    };
+  }
+
+  return {
+    label: "Active",
+    color: "text-green-400",
+    dot: "bg-green-500",
+    message: `Expires in ${diff} day${diff !== 1 ? "s" : ""}`
+  };
+}, [memberLink.membershipEnd]);
+
   async function requestNotifications() {
     if (!("Notification" in window)) {
       setNotificationStatus("Not supported");
@@ -217,10 +261,44 @@ export function UserDashboard() {
 
   async function linkMemberForReminders() {
     try {
-      if (!memberLink.memberId.trim() || !memberLink.phone.trim()) {
-        setLinkStatus("Enter your member ID and phone number first.");
-        return;
-      }
+// Validate Member ID
+if (!memberLink.memberId.trim()) {
+  setMemberIdError("Member ID is required.");
+  return;
+}
+
+if (memberLink.memberId.trim().length < 5) {
+  setMemberIdError("Member ID must be at least 5 characters.");
+  return;
+}
+
+// Validate Phone Number
+if (!memberLink.phone.trim()) {
+  setPhoneError("Phone number is required.");
+  return;
+}
+
+if (!/^\d{10}$/.test(memberLink.phone)) {
+  setPhoneError("Enter a valid 10-digit phone number.");
+  return;
+}
+
+// Validate Plan End Date
+if (!memberLink.membershipEnd) {
+  setPlanDateError("Plan end date is required.");
+  return;
+}
+
+const today = new Date();
+today.setHours(0, 0, 0, 0);
+
+const expiry = new Date(memberLink.membershipEnd);
+expiry.setHours(0, 0, 0, 0);
+
+if (expiry < today) {
+  setPlanDateError("Plan end date cannot be in the past.");
+  return;
+}
 
       if (!("Notification" in window)) {
         setLinkStatus("This browser does not support app notifications.");
@@ -235,8 +313,14 @@ export function UserDashboard() {
       }
 
       const vapidKey = getFirebaseVapidKey();
+
       if (!vapidKey) {
-        setLinkStatus("Firebase web push key is missing. Staff must add NEXT_PUBLIC_FIREBASE_VAPID_KEY.");
+        console.error("Missing NEXT_PUBLIC_FIREBASE_VAPID_KEY");
+
+        setLinkStatus(
+          "Notification service is currently unavailable. You can still renew your membership at the gym."
+        );
+
         return;
       }
 
@@ -410,6 +494,35 @@ export function UserDashboard() {
                   <h2 className="text-xl font-black">Plan Renewal Reminder</h2>
                 </div>
                 <p className="text-sm text-white/58">{linkStatus}</p>
+                {membershipStatus && (
+                  <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.04] p-4">
+                    <p className="text-sm text-white/55">
+                      Membership Status
+                    </p>
+
+                    <div className="mt-2 flex items-center gap-2">
+                      <div
+                        className={`h-2.5 w-2.5 rounded-full ${membershipStatus.dot}`}
+                      />
+
+                      <span className={`font-bold ${membershipStatus.color}`}>
+                        {membershipStatus.label}
+                      </span>
+                    </div>
+
+                    <p className="mt-2 text-sm text-white/60">
+                        Expires on
+                    </p>
+
+                    <p className="font-semibold">
+                        {memberLink.membershipEnd}
+                    </p>
+
+                    <p className="mt-2 text-sm text-white/60">
+                        {membershipStatus.message}
+                    </p>
+                  </div>
+                )}
                 {memberLink.membershipEnd && (
                   <p className="mt-2 text-sm text-white/68">
                     Plan expires on <span className="font-bold text-white">{memberLink.membershipEnd}</span>. Payment status:{" "}
@@ -423,11 +536,107 @@ export function UserDashboard() {
               <div className="grid w-full gap-3 lg:max-w-xl sm:grid-cols-2">
                 <label>
                   <span className="mb-2 block text-sm text-white/65">Member ID</span>
-                  <input className="h-11 w-full rounded-lg border border-white/10 bg-black/35 px-3 outline-none" value={memberLink.memberId} onChange={(event) => setMemberLink((current) => ({ ...current, memberId: event.target.value }))} />
+                  <input
+                      className="h-11 w-full rounded-lg border border-white/10 bg-black/35 px-3 outline-none"
+                      value={memberLink.memberId}
+                      onChange={(event) => {
+                        setMemberLink((current) => ({
+                          ...current,
+                          memberId: event.target.value,
+                        }));
+                        setMemberIdError("");
+                      }}
+                      onBlur={() => {
+                        const id = memberLink.memberId.trim();
+
+                        if (!id) {
+                          setMemberIdError("Member ID is required.");
+                        } else if (id.length < 5) {
+                          setMemberIdError("Member ID must be at least 5 characters.");
+                        }
+                      }}
+                    />
+                    {memberIdError && (
+                      <p className="mt-1 text-sm text-red-500">
+                        {memberIdError}
+                      </p>
+                    )}
                 </label>
                 <label>
                   <span className="mb-2 block text-sm text-white/65">Phone</span>
-                  <input className="h-11 w-full rounded-lg border border-white/10 bg-black/35 px-3 outline-none" value={memberLink.phone} onChange={(event) => setMemberLink((current) => ({ ...current, phone: event.target.value }))} />
+                <label>
+                 
+
+                  <input
+                    className="h-11 w-full rounded-lg border border-white/10 bg-black/35 px-3 outline-none"
+                    value={memberLink.phone}
+                    maxLength={10}
+                    onChange={(event) => {
+                      const value = event.target.value.replace(/\D/g, "");
+
+                      setMemberLink((current) => ({
+                        ...current,
+                        phone: value,
+                      }));
+
+                      setPhoneError("");
+                    }}
+                    onBlur={() => {
+                      if (!memberLink.phone) {
+                        setPhoneError("Phone number is required.");
+                      } else if (!/^\d{10}$/.test(memberLink.phone)) {
+                        setPhoneError("Enter a valid 10-digit phone number.");
+                      }
+                    }}
+                  />
+
+                  {phoneError && (
+                    <p className="mt-1 text-sm text-red-500">
+                      {phoneError}
+                    </p>
+                  )}
+                </label>               
+
+                <label className="sm:col-span-2">
+                  <span className="mb-2 block text-sm text-white/65">
+                    Plan End Date
+                  </span>
+
+                  <input
+                    type="date"
+                    className="h-11 w-full rounded-lg border border-white/10 bg-black/35 px-3 outline-none"
+                    value={memberLink.membershipEnd ?? ""}
+                    onChange={(event) => {
+                      setMemberLink((current) => ({
+                        ...current,
+                        membershipEnd: event.target.value,
+                      }));
+
+                      setPlanDateError("");
+                    }}
+                    onBlur={() => {
+                      if (!memberLink.membershipEnd) {
+                        setPlanDateError("Plan end date is required.");
+                        return;
+                      }
+
+                      const today = new Date();
+                      today.setHours(0, 0, 0, 0);
+
+                      const expiry = new Date(memberLink.membershipEnd);
+
+                      if (expiry < today) {
+                        setPlanDateError("Plan end date cannot be in the past.");
+                      }
+                    }}
+                  />
+
+                  {planDateError && (
+                    <p className="mt-1 text-sm text-red-500">
+                      {planDateError}
+                    </p>
+                  )}
+                </label>
                 </label>
                 <Button className="w-full sm:col-span-1" onClick={linkMemberForReminders}>
                   <Bell size={18} /> Enable Renewal Alerts
