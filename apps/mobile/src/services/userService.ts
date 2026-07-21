@@ -6,7 +6,7 @@ export interface UserProfile {
   height: number;
   weight: number;
   age: number;
-  goal: 'fatLoss' | 'muscleGain' | 'endurance';
+  goal: 'Fat Loss' | 'Muscle Gain' | 'Endurance';
   sleepHours: number;
   dailyStepTarget: number;
 }
@@ -35,7 +35,7 @@ export const createDefaultProfile = async (userId: string) => {
       height: 170,
       weight: 70,
       age: 25,
-      goal: 'fatLoss',
+      goal: 'Fat Loss',
       sleepHours: 7,
       dailyStepTarget: 8000,
     };
@@ -61,5 +61,16 @@ export const saveWorkoutToFirebase = async (userId: string, data: {
     console.log('Workout saved to Firebase');
   } catch (error) {
     console.error('Error saving workout:', error);
+  }
+};
+
+export const saveUserProfile = async (userId: string, profile: UserProfile): Promise<void> =>{
+  try{
+    const userRef = doc(db, 'users' , userId, 'profile', 'data');
+    await setDoc(userRef, profile, {merge:true});
+    console.log("User profile saved successfully!");
+  } catch(error){
+    console.error("Error saving user profile: ", error);
+    throw error;
   }
 };

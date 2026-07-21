@@ -5,11 +5,13 @@ import { useStepCounter } from '../hooks/useStepCounter';
 import { analyzeHealthWithCodex } from '../services/aiCodexService';
 import { auth } from '../config/firebaseConfig';
 import { getUserProfile, createDefaultProfile, saveWorkoutToFirebase, UserProfile } from '../services/userService';
+import { useBluetooth } from '../hooks/useBluetooth';
 
 const DAILY_FREE_LIMIT = 3;
 
 export default function AITrainerScreen() {
-  const { steps, isAvailable } = useStepCounter();
+  const { steps } = useStepCounter();
+  const { heartRate, isConnected, deviceName } = useBluetooth();
   const [aiResponse, setAiResponse] = useState('');
   const [loading, setLoading] = useState(false);
   const [promptsUsedToday, setPromptsUsedToday] = useState(0);
@@ -18,7 +20,7 @@ export default function AITrainerScreen() {
 
   const userId = auth.currentUser?.uid || 'test_user_001';
 
-  // Firebase se profile load karo
+  
   useEffect(() => {
     const loadProfile = async () => {
       let profile = await getUserProfile(userId);
@@ -38,17 +40,18 @@ export default function AITrainerScreen() {
   // Metrics text box update
   useEffect(() => {
     const dailyTarget = userProfile?.dailyStepTarget || 5000;
-    const heartRate = steps > dailyTarget * 0.6 ? 125 : 90;
+    //const heartRate = steps > dailyTarget * 0.6 ? 125 : 90;
     const metrics = `
-Steps today: ${steps} / ${dailyTarget}
-Heart Rate: ${heartRate} BPM
-Activity: walking
-Sleep last night: ${userProfile?.sleepHours || 6} hours
-Fitness Goal: ${userProfile?.goal || 'Fat Loss'}
-Progress: ${((steps / dailyTarget) * 100).toFixed(0)}% of daily target
+  Steps today: ${steps} / ${dailyTarget}
+  Heart Rate: ${heartRate} BPM
+  Activity: walking
+  Sleep last night: ${userProfile?.sleepHours || 6} hours
+  Fitness Goal: ${userProfile?.goal || 'Fat Loss'}
+  BLE Device: ${isConnected ? deviceName : 'Not connected'}
+  Progress: ${((steps / dailyTarget) * 100).toFixed(0)}% of daily target
     `.trim();
     setMetricsText(metrics);
-  }, [steps, userProfile]);
+  }, [steps, userProfile, heartRate, isConnected]);
 
   const checkDailyLimit = async () => {
     const today = new Date().toDateString();
@@ -145,6 +148,7 @@ Progress: ${((steps / dailyTarget) * 100).toFixed(0)}% of daily target
 
 const styles = StyleSheet.create({
   container: { 
+    
     flex: 1, 
     backgroundColor: '#000', 
     padding: 20 
@@ -152,7 +156,7 @@ const styles = StyleSheet.create({
   title: { 
     fontSize: 24, 
     fontWeight: 'bold', 
-    color: '#FFD700', 
+    color: '#ff0000', 
     marginBottom: 20, 
     textAlign: 'center' 
   },
@@ -168,7 +172,7 @@ const styles = StyleSheet.create({
     borderRadius: 10, 
     marginBottom: 15, 
     borderWidth: 1, 
-    borderColor: '#FFD700' 
+    borderColor: '#da0000' 
   },
   metricsText: { 
     color: '#90EE90', 
@@ -182,7 +186,7 @@ const styles = StyleSheet.create({
     textAlign: 'center' 
   },
   button: { 
-    backgroundColor: '#FFD700', 
+    backgroundColor: '#e22600', 
     padding: 15, 
     borderRadius: 10, 
     alignItems: 'center', 
@@ -203,10 +207,10 @@ const styles = StyleSheet.create({
     alignItems: 'center', 
     marginBottom: 15, 
     borderWidth: 1, 
-    borderColor: '#FFD700' 
+    borderColor: '#e22600' 
   },
   payButtonText: { 
-    color: '#FFD700', 
+    color: '#e22600', 
     fontSize: 14 
   },
   responseBox: { 
