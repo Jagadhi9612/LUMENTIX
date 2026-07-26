@@ -19,6 +19,18 @@
       "predictiveBackGestureEnabled": false,
       "package": "com.anonymous.mobile"
     },
+
+    "plugins": [
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "modes": ["peripheral", "central"],
+          "bluetoothAlwaysPermission": "Allow $(PRODUCT_NAME) to connect to bluetooth devices"
+        }
+      ]
+    ],
+
     "web": {
       "favicon": "./assets/favicon.png"
     }
