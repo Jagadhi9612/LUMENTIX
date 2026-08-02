@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Platform, PermissionsAndroid } from 'react-native';
-import { BleManager } from 'react-native-ble-plx';
+import { BleManager, Device } from 'react-native-ble-plx';
 import * as base64 from 'base64-js';
 
-const manager = new BleManager();
+// Agar platform web hai toh manager ko null rakho, warna BleManager start karo
+const manager = Platform.OS === 'web' ? null : new BleManager();
 const HEART_RATE_SERVICE_UUID = '0000180d-0000-1000-8000-00805f9b34fb';
 const HEART_RATE_CHARACTERISTIC_UUID='00002a37-0000-1000-8000-00805f9b34fb';
 
@@ -14,6 +15,10 @@ export function useBluetooth() {
   const [deviceName, setDeviceName] = useState<string>('');
   const [hasPermissions, setHasPermissions] = useState<boolean>(false);
   
+  const scanTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectedDeviceRef = useRef<Device | null>(null);
+
+
   useEffect(() => {
     
     if (Platform.OS === 'web') {
@@ -29,9 +34,19 @@ export function useBluetooth() {
       
       return () => clearInterval(interval);
     }
+
+    return () => {
+      if(scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+      manager?.stopDeviceScan();
+      if(connectedDeviceRef.current){
+        manager?.cancelDeviceConnection(connectedDeviceRef.current.id).catch(console.warn);
+      }
+    };
   }, []);
 
   const startScan = async () => {
+    if(isScanning) return;
+
     setIsScanning(true);
     if(Platform.OS === 'web'){
       
@@ -54,7 +69,13 @@ export function useBluetooth() {
       if(allPermissionsGranted){
         console.log("Success: All Bluetooth Permissions Granted!");
 
-        manager.startDeviceScan([HEART_RATE_SERVICE_UUID],null,async(error,device)=>{
+        scanTimeoutRef.current = setTimeout(() => {
+          manager?.stopDeviceScan();
+          setIsScanning(false);
+          console.log("Scan timed out. No device found within 10 seconds.");
+        }, 10000);
+
+        manager?.startDeviceScan([HEART_RATE_SERVICE_UUID],null,async(error,device)=>{
           if(error){
             console.warn('Scan error:',error);
             setIsScanning(false);
@@ -73,10 +94,22 @@ export function useBluetooth() {
               const connectedDevice = await device.connect(); // connecting device with device
               await connectedDevice.discoverAllServicesAndCharacteristics(); //discovering map inside device
 
+              connectedDeviceRef.current = connectedDevice; // saving connected device for future reference
+
               //3. updaying ui states- success
               setIsConnected(true);
               setDeviceName(device.name || 'Unknown device');
               console.log('Connected successfully! Starting to monitor heart rate...');
+
+              manager?.onDeviceDisconnected(device.id,(disconnectedError, disconnectedDevice)=>{
+                console.log('Device disconnected:', disconnectedDevice?.name || disconnectedDevice?.id);
+                setIsConnected(false);
+                setDeviceName('');
+                setHeartRate(0);
+                connectedDeviceRef.current = null;
+            
+              });
+
 
               connectedDevice.monitorCharacteristicForService(
                 HEART_RATE_SERVICE_UUID, HEART_RATE_CHARACTERISTIC_UUID,
@@ -113,6 +146,8 @@ export function useBluetooth() {
   };
 
   const stopScan = () => {
+    manager?.stopDeviceScan();
+    if(scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
     setIsScanning(false);
   };
 

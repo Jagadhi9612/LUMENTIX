@@ -36,6 +36,10 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess: () => 
         Alert.alert('Login Failed', 'No account found with this email.');
       } else if (error.code === 'auth/too-many-requests') {
         Alert.alert('Too Many Attempts', 'Account temporarily locked. Try again later.');
+      } else if (error.code === 'auth/email-already-in-use') {
+        Alert.alert('Signup Failed', 'An account already exists with this email.');
+      } else if (error.code === 'auth/weak-password') {
+        Alert.alert('Signup Failed', 'Password should be at least 6 characters.');
       } else {
         Alert.alert('Login Failed', error.message);
       }
