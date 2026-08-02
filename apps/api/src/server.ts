@@ -1,3 +1,4 @@
+import { generateDietPlan } from "./ai/gemini.js";
 import "dotenv/config";
 import compression from "compression";
 import cors from "cors";
@@ -17,6 +18,7 @@ import { packagesRouter } from "./modules/packages.js";
 import { paymentsRouter } from "./modules/payments.js";
 import { trainersRouter } from "./modules/trainers.js";
 import { expensesRouter } from "./modules/expenses.js";
+
 
 const app = express();
 const port = Number(process.env.PORT ?? 4000);
@@ -51,6 +53,40 @@ app.use("/api/v1/packages", packagesRouter);
 app.use("/api/v1/payments", paymentsRouter);
 app.use("/api/v1/trainers", trainersRouter);
 app.use("/api/v1/expenses", expensesRouter);
+
+app.post("/api/v1/diet", async (req, res) => {
+  try {
+    const { age, gender, height, weight, goal } = req.body;
+
+    if (!age || !gender || !height || !weight || !goal) {
+      res.status(400).json({
+        success: false,
+        message: "Missing required fields",
+      });
+      return;
+    }
+
+    const diet = await generateDietPlan({
+      age,
+      gender,
+      height,
+      weight,
+      goal,
+    });
+
+    res.json({
+      success: true,
+      diet,
+    });
+  } catch (error) {
+    console.error("Diet generation error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Unable to generate diet plan",
+    });
+  }
+});
 
 app.use((_req, res) => {
   res.status(404).json({ message: "Route not found" });

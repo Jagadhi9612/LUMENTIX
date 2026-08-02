@@ -31,5 +31,9 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "firebase-tools": "^15.24.0",
+    "tsx": "^4.23.2"
   }
 }

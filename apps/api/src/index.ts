@@ -554,3 +554,4 @@ export const dailyFirestoreExport = onSchedule(
     });
   }
 );
+export { generateDietPlanApi } from "./ai/diet.js";

@@ -107,6 +107,20 @@ export function UserDashboard() {
   const [memberLink, setMemberLink] = useState<MemberLink>({ memberId: "", phone: "", membershipEnd: "" });
   const [linkStatus, setLinkStatus] = useState("Stay informed about your membership renewal.");
 
+  interface DietPlan {
+  calories: number;
+  protein: string;
+  carbs: string;
+  fat: string;
+  breakfast: string;
+  lunch: string;
+  dinner: string;
+}
+
+const [dietPlan, setDietPlan] = useState<DietPlan | null>(null);
+  const [loading, setLoading] = useState(false);
+
+
   const [memberIdError, setMemberIdError] = useState("");
   const [phoneError, setPhoneError] = useState("");
   const [planDateError, setPlanDateError] = useState("");
@@ -386,6 +400,47 @@ if (expiry < today) {
     };
     setCheckIns((current) => [entry, ...current.filter((item) => item.date !== entry.date)].slice(0, 12));
   }
+const handleGenerateDiet = async () => {
+  try {
+    setLoading(true);
+
+    const API_URL =
+      process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+
+    const response = await fetch(`${API_URL}/api/v1/diet`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        age: profile.age,
+        gender: profile.sex,
+        height: profile.height,
+        weight: profile.weight,
+        goal: profile.goal,
+      }),
+    });
+
+    const data = await response.json();
+
+    console.log("DIET RESPONSE:", data);
+
+    if (!data.success) {
+      throw new Error(data.message);
+    }
+
+    const parsedDiet =
+  typeof data.diet === "string"
+    ? JSON.parse(data.diet)
+    : data.diet;
+
+    setDietPlan(parsedDiet);
+  } catch (error) {
+    console.error("Diet generation failed:", error);
+  } finally {
+    setLoading(false);
+  }
+};
 
   return (
     <main className="min-h-screen bg-[#050505] text-white">
@@ -681,17 +736,129 @@ if (expiry < today) {
           </Card>
 
           <Card>
-            <div className="mb-5 flex items-center gap-3">
-              <Salad className="text-[#16A34A]" />
-              <h2 className="text-xl font-black">Food To Take</h2>
-            </div>
-            <div className="space-y-3">
-              {foodByGoal[profile.goal].map((item) => (
-                <div key={item} className="rounded-lg border border-white/10 bg-white/[0.04] p-3 text-sm text-white/72">
-                  {item}
+              <div className="mb-5 flex items-center gap-3">
+                  <Salad className="text-[#16A34A]" />
+                  <div>
+                      <h2 className="text-xl font-black">
+                          AI Diet Planner
+                      </h2>
+
+                      <p className="text-sm text-white/55">
+                          Powered by Elite AI Nutrition Coach
+                      </p>
+                  </div>
+              </div>
+
+              <div className="rounded-lg border border-white/10 bg-white/[0.04] p-4">
+                  <p className="font-semibold text-green-400">
+                      ✓ Using your Body Agent Profile
+                  </p>
+
+                  <div className="mt-4 space-y-2 text-sm text-white/70">
+
+                      <div className="flex justify-between">
+                          <span>Goal</span>
+                          <span>{profile.goal}</span>
+                      </div>
+
+                      <div className="flex justify-between">
+                          <span>Age</span>
+                          <span>{profile.age}</span>
+                      </div>
+
+                      <div className="flex justify-between">
+                          <span>Gender</span>
+                          <span>{profile.sex}</span>
+                      </div>
+
+                      <div className="flex justify-between">
+                          <span>Height</span>
+                          <span>{profile.height} cm</span>
+                      </div>
+
+                      <div className="flex justify-between">
+                          <span>Weight</span>
+                          <span>{profile.weight} kg</span>
+                      </div>
+
+                  </div>
+              </div>
+
+              <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.04] p-4">
+
+            {dietPlan ? (
+              <div className="space-y-3 text-sm">
+                <div>
+                  <p className="font-semibold text-white">Breakfast</p>
+                  <p className="text-white/70">{dietPlan.breakfast}</p>
                 </div>
-              ))}
-            </div>
+
+                <div>
+                  <p className="font-semibold text-white">Lunch</p>
+                  <p className="text-white/70">{dietPlan.lunch}</p>
+                </div>
+
+                <div>
+                  <p className="font-semibold text-white">Dinner</p>
+                  <p className="text-white/70">{dietPlan.dinner}</p>
+                </div>
+
+
+              </div>
+            ) : (
+              <>
+                <p className="text-sm text-white/60">
+                  No AI diet plan generated yet.
+                </p>
+
+                <p className="mt-2 text-xs text-white/45">
+                  Your meal plan will be generated automatically using your Body Agent information.
+                </p>
+              </>
+            )}
+
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-3">
+
+                  <div className="rounded-lg border border-white/10 bg-white/[0.04] p-3">
+                      <p className="text-xs text-white/50">Calories</p>
+                      <p className="mt-1 text-lg font-bold">
+                        {dietPlan?.calories ?? "--"}
+                      </p>
+                  </div>
+
+                  <div className="rounded-lg border border-white/10 bg-white/[0.04] p-3">
+                      <p className="text-xs text-white/50">Protein</p>
+                      <p className="mt-1 text-lg font-bold">
+                        {dietPlan?.protein ?? "--"}
+                      </p>
+                  </div>
+
+                  <div className="rounded-lg border border-white/10 bg-white/[0.04] p-3">
+                      <p className="text-xs text-white/50">Carbs</p>
+                      <p className="mt-1 text-lg font-bold">
+                        {dietPlan?.carbs ?? "--"}
+                      </p>
+                  </div>
+
+                  <div className="rounded-lg border border-white/10 bg-white/[0.04] p-3">
+                      <p className="text-xs text-white/50">Fat</p>
+                      <p className="mt-1 text-lg font-bold">
+                        {dietPlan?.fat ?? "--"}
+                      </p>
+                  </div>
+
+              </div>
+
+                <Button
+                    className="mt-5 w-full"
+                    onClick={handleGenerateDiet}
+                    disabled={loading}
+                >
+                    {loading ? "Generating..." : "Generate AI Diet Plan"}
+                </Button>
+
           </Card>
 
           <Card>
