@@ -3,6 +3,8 @@ import { Platform, PermissionsAndroid } from 'react-native';
 import { BleManager, Device } from 'react-native-ble-plx';
 import * as base64 from 'base64-js';
 
+import { heartRateBuffer } from '../utils/vitalsTracker';
+
 // Agar platform web hai toh manager ko null rakho, warna BleManager start karo
 const manager = Platform.OS === 'web' ? null : new BleManager();
 const HEART_RATE_SERVICE_UUID = '0000180d-0000-1000-8000-00805f9b34fb';
@@ -18,6 +20,27 @@ export function useBluetooth() {
   const scanTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectedDeviceRef = useRef<Device | null>(null);
 
+  const averageIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const startAveragingLoop = () => {
+    if(averageIntervalRef.current) clearInterval(averageIntervalRef.current);
+
+    averageIntervalRef.current = setInterval(() => {
+      const avg = heartRateBuffer.getAverageAndClear();
+      if(avg !== null){
+        console.log(`[VITALS SYSTEM] 5-Min Average Heart Rate calculated: ${avg} bpm.`);
+        console.log(`-> Ready to send to Firestore (Step 3) once rules are fixed!`);
+      } else{
+        console.log(`[VITALS SYSTEM] No data collected in this interval.`);
+      }
+
+    },10000);
+
+  };
+
+  const stopAveragingLoop= () => {
+    if(averageIntervalRef.current) clearInterval(averageIntervalRef.current);
+  };
 
   useEffect(() => {
     
@@ -25,18 +48,25 @@ export function useBluetooth() {
       setHasPermissions(true);
       setIsConnected(true);
       setDeviceName('Mock BLE Band');
+
+      startAveragingLoop();
       
       const interval = setInterval(() => {
         // Realistic heart rate simulation
         const mockHR = Math.floor(65 + Math.random() * 40);
         setHeartRate(mockHR);
+        heartRateBuffer.addReading(mockHR);
       }, 2000);
       
-      return () => clearInterval(interval);
+      return () => {
+        clearInterval(interval);
+        stopAveragingLoop();
+      };
     }
 
     return () => {
       if(scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+      stopAveragingLoop();
       manager?.stopDeviceScan();
       if(connectedDeviceRef.current){
         manager?.cancelDeviceConnection(connectedDeviceRef.current.id).catch(console.warn);
@@ -101,12 +131,16 @@ export function useBluetooth() {
               setDeviceName(device.name || 'Unknown device');
               console.log('Connected successfully! Starting to monitor heart rate...');
 
+              stopAveragingLoop();
+
               manager?.onDeviceDisconnected(device.id,(disconnectedError, disconnectedDevice)=>{
                 console.log('Device disconnected:', disconnectedDevice?.name || disconnectedDevice?.id);
                 setIsConnected(false);
                 setDeviceName('');
                 setHeartRate(0);
                 connectedDeviceRef.current = null;
+
+                stopAveragingLoop();
             
               });
 
@@ -123,6 +157,8 @@ export function useBluetooth() {
                     const rawData = base64.toByteArray(characteristic.value);
                     const hr = rawData[1];
                     setHeartRate(hr);
+
+                    heartRateBuffer.addReading(hr);
                   }
                 }
               );
