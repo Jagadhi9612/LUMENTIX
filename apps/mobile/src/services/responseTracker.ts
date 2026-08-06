@@ -1,5 +1,6 @@
 // apps/mobile/src/services/responseTracker.ts
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { use } from 'react';
 
 // Ek response ka structure
 export interface AIResponseRecord {
@@ -15,12 +16,13 @@ export interface AIResponseRecord {
   promptsUsed: number;
 }
 
-const STORAGE_KEY = 'ai_response_history';
+const getStorageKey = (userId : string) => `ai_response_history_${userId}`;
 
 // saving new response  
-export const saveAIResponse = async (record: Omit<AIResponseRecord, 'id'>) => {
+export const saveAIResponse = async (userId: string, record: Omit<AIResponseRecord, 'id'>) => {
   try {
-    const existing = await AsyncStorage.getItem(STORAGE_KEY);
+    const key = getStorageKey(userId);
+    const existing = await AsyncStorage.getItem(key);
     const history: AIResponseRecord[] = existing ? JSON.parse(existing) : [];
 
     const newRecord: AIResponseRecord = {
@@ -29,7 +31,7 @@ export const saveAIResponse = async (record: Omit<AIResponseRecord, 'id'>) => {
     };
 
     history.push(newRecord);
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+    await AsyncStorage.setItem(key, JSON.stringify(history));
     console.log('Response saved successfully');
   } catch (error) {
     console.error('Save error:', error);
@@ -38,10 +40,12 @@ export const saveAIResponse = async (record: Omit<AIResponseRecord, 'id'>) => {
 
 
 export const getResponseHistory = async (
+  userId: string, 
   period: '7days' | '1month' | '1year' | 'all'
 ): Promise<AIResponseRecord[]> => {
   try {
-    const existing = await AsyncStorage.getItem(STORAGE_KEY);
+    const key = getStorageKey(userId);
+    const existing = await AsyncStorage.getItem(key);
     if (!existing) return [];
 
     const history: AIResponseRecord[] = JSON.parse(existing);
@@ -74,6 +78,6 @@ export const convertToCSV = (history: AIResponseRecord[]): string => {
 };
 
 
-export const clearHistory = async () => {
-  await AsyncStorage.removeItem(STORAGE_KEY);
+export const clearHistory = async (userId:string) => {
+  await AsyncStorage.removeItem(getStorageKey(userId));
 };
