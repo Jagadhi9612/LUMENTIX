@@ -20,7 +20,6 @@ export default function AITrainerScreen() {
 
   const userId = auth.currentUser?.uid || 'test_user_001';
 
-  
   useEffect(() => {
     const loadProfile = async () => {
       let profile = await getUserProfile(userId);
@@ -32,15 +31,14 @@ export default function AITrainerScreen() {
     loadProfile();
   }, []);
 
-  // Daily limit check
+  // Daily limit check (Dependencies mein userId add kiya taaki user change hone par refresh ho)
   useEffect(() => {
     checkDailyLimit();
-  }, []);
+  }, [userId]);
 
   // Metrics text box update
   useEffect(() => {
     const dailyTarget = userProfile?.dailyStepTarget || 5000;
-    //const heartRate = steps > dailyTarget * 0.6 ? 125 : 90;
     const metrics = `
   Steps today: ${steps} / ${dailyTarget}
   Heart Rate: ${heartRate} BPM
@@ -55,11 +53,17 @@ export default function AITrainerScreen() {
 
   const checkDailyLimit = async () => {
     const today = new Date().toDateString();
-    const stored = await AsyncStorage.getItem('ai_prompts_date');
-    const count = await AsyncStorage.getItem('ai_prompts_count');
+    
+    // FIX 1: User-Specific AsyncStorage Keys
+    const dateKey = `ai_prompts_date_${userId}`;
+    const countKey = `ai_prompts_count_${userId}`;
+    
+    const stored = await AsyncStorage.getItem(dateKey);
+    const count = await AsyncStorage.getItem(countKey);
+    
     if (stored !== today) {
-      await AsyncStorage.setItem('ai_prompts_date', today);
-      await AsyncStorage.setItem('ai_prompts_count', '0');
+      await AsyncStorage.setItem(dateKey, today);
+      await AsyncStorage.setItem(countKey, '0');
       setPromptsUsedToday(0);
     } else {
       setPromptsUsedToday(parseInt(count || '0'));
@@ -82,10 +86,10 @@ export default function AITrainerScreen() {
     setLoading(true);
     try {
       const dailyTarget = userProfile?.dailyStepTarget || 5000;
-      const heartRate = steps > dailyTarget * 0.6 ? 125 : 90;
+      const calculatedHeartRate = steps > dailyTarget * 0.6 ? 125 : 90;
 
       const response = await analyzeHealthWithCodex({
-        heartRate,
+        heartRate: calculatedHeartRate,
         sleepHours: userProfile?.sleepHours || 6,
         activityType: 'walking',
         metricsText,
@@ -97,13 +101,16 @@ export default function AITrainerScreen() {
       await saveWorkoutToFirebase(userId, {
         date: new Date().toISOString().split('T')[0],
         steps,
-        heartRate,
+        heartRate: calculatedHeartRate,
         aiResponse: response,
-        goal: userProfile?.goal || 'fatLoss',
+        // FIX 2: Title Case for Goal Fallback
+        goal: userProfile?.goal || 'Fat Loss', 
       });
 
+      // FIX 1 (Continued): Update user-specific count
+      const countKey = `ai_prompts_count_${userId}`;
       const newCount = promptsUsedToday + 1;
-      await AsyncStorage.setItem('ai_prompts_count', newCount.toString());
+      await AsyncStorage.setItem(countKey, newCount.toString());
       setPromptsUsedToday(newCount);
 
     } catch (error) {
@@ -148,7 +155,6 @@ export default function AITrainerScreen() {
 
 const styles = StyleSheet.create({
   container: { 
-    
     flex: 1, 
     backgroundColor: '#000', 
     padding: 20 
