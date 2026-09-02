@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert } from 'react-native';
-//import { signInWithEmailAndPassword } from 'firebase/auth';
 import { auth } from '../config/firebaseConfig';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+
+import { saveUserProfile } from '../services/userService'; 
 
 export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess: () => void }) {
   const [email, setEmail] = useState('');
@@ -21,10 +22,13 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess: () => 
       if (isSignupMode) {
         // Agar switch ON hai, toh naya account banao
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        
+        await saveUserProfile(userCredential.user.uid, { role: 'standard_user' } as any);
+
         console.log('Signed up and logged in:', userCredential.user.uid);
         onLoginSuccess();
       } else {
-        // Agar switch OFF hai, toh purane account se login karo
+        
         const userCredential = await signInWithEmailAndPassword(auth, email, password);
         console.log('Logged in:', userCredential.user.uid);
         onLoginSuccess();

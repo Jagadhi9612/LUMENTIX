@@ -9,6 +9,8 @@ export interface UserProfile {
   goal: 'Fat Loss' | 'Muscle Gain' | 'Endurance';
   sleepHours: number;
   dailyStepTarget: number;
+  phoneNumber?: string;
+  role?: string; 
 }
 
 // User profile fetch karo Firebase se

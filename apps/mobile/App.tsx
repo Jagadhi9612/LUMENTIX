@@ -1,18 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Text } from 'react-native';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from './src/config/firebaseConfig';
 import LoginScreen from './src/screens/LoginScreen';
 import ProfileSetupScreen from './src/screens/ProfileSetupScreen';
 import AITrainerScreen from './src/screens/AITrainerScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
+import ProfileScreen from './src/screens/ProfileScreen'; 
 import { getUserProfile } from './src/services/userService';
-import { TouchableOpacity, Text } from 'react-native';
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [hasProfile, setHasProfile] = useState<boolean | null>(null);
-  const [activeTab, setActiveTab] = useState<'trainer' | 'history'>('trainer');
+  const [activeTab, setActiveTab] = useState<'trainer' | 'history'| 'profile'>('trainer');
 
   useEffect(() => {
     // Firebase auth state checking 
@@ -42,6 +42,8 @@ export default function App() {
 
   return (
     <View style={{ flex: 1, backgroundColor: '#000' }}>
+      
+      
       <View style={styles.tabBar}>
         <TouchableOpacity
           style={[styles.tab, activeTab === 'trainer' && styles.tabActive]}
@@ -51,6 +53,7 @@ export default function App() {
             AI Trainer
           </Text>
         </TouchableOpacity>
+        
         <TouchableOpacity
           style={[styles.tab, activeTab === 'history' && styles.tabActive]}
           onPress={() => setActiveTab('history')}
@@ -59,8 +62,26 @@ export default function App() {
             History
           </Text>
         </TouchableOpacity>
+
+        
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'profile' && styles.tabActive]}
+          onPress={() => setActiveTab('profile')}
+        >
+          <Text style={[styles.tabText, activeTab === 'profile' && styles.tabTextActive]}>
+            Profile
+          </Text>
+        </TouchableOpacity>
       </View>
-      {activeTab === 'trainer' ? <AITrainerScreen /> : <HistoryScreen />}
+      
+
+      
+      <View style={{ flex: 1 }}>
+        {activeTab === 'trainer' ? <AITrainerScreen /> : 
+         activeTab === 'history' ? <HistoryScreen /> : 
+         <ProfileScreen />}
+      </View>
+      
     </View>
   );
 }

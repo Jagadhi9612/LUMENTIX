@@ -12,6 +12,7 @@ export default function ProfileSetupScreen({ onProfileComplete }: { onProfileCom
   const [age, setAge] = useState('');
   const [goal, setGoal] = useState<Goal>('Fat Loss');
   const [saving, setSaving] = useState(false);
+  const[phoneNumber,setPhoneNumber]=useState('');
 
   const handleSubmit = async () => {
     if (!name || !height || !weight || !age) {
@@ -26,6 +27,7 @@ export default function ProfileSetupScreen({ onProfileComplete }: { onProfileCom
         weight: Number(weight),
         age: Number(age),
         goal,
+        phoneNumber,
         sleepHours: 7,
         dailyStepTarget: 8000,
       });
@@ -44,6 +46,7 @@ export default function ProfileSetupScreen({ onProfileComplete }: { onProfileCom
       <TextInput style={styles.input} placeholder="Height (cm)" placeholderTextColor="#888" keyboardType="numeric" value={height} onChangeText={setHeight} />
       <TextInput style={styles.input} placeholder="Weight (kg)" placeholderTextColor="#888" keyboardType="numeric" value={weight} onChangeText={setWeight} />
       <TextInput style={styles.input} placeholder="Age" placeholderTextColor="#888" keyboardType="numeric" value={age} onChangeText={setAge} />
+      <TextInput style = {styles.input} placeholder="Phone Number" placeholderTextColor="#888 " keyboardType='phone-pad' value={phoneNumber} onChangeText={setPhoneNumber}/>
 
       <View style={styles.goalRow}>
         {(['Fat Loss', 'Muscle Gain', 'Endurance'] as Goal[]).map((g) => (
